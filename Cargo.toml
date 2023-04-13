@@ -1,0 +1,3 @@
+[workspace]
+members = ["tks_pam", "tks-cli", "tks-service"]
+
