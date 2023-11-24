@@ -6,3 +6,7 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
+dbus-crossroads = "0.5.2"
+dbus-rs = "0.0.5"
+tss-esapi = "7.4.0"
+
