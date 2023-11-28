@@ -2,10 +2,16 @@
 //
 // Author: Valentin Rusu
 
-mod dbus;
+mod tks_dbus;
+extern crate pretty_env_logger;
+#[macro_use]
+extern crate log;
 
-#[async_std::main]
-async fn main() {
-    println!("Starting server...");
-    dbus::start_server().await.unwrap();
+fn main() {
+    pretty_env_logger::init();
+    trace!("Starting server...");
+    match tks_dbus::start_server() {
+        Ok(_) => info!("Server started successfully"),
+        Err(e) => error!("Server failed to start: {}", e),
+    }
 }
