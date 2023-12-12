@@ -1,45 +1,102 @@
-pub struct SessionImpl;
-use dbus_crossroads as crossroads;
-use lazy_static::lazy_static;
-use log::{error, info, trace};
-use std::error;
-use std::sync::Mutex;
-
+use crate::register_object;
 use crate::tks_dbus::fdo::session::{
     register_org_freedesktop_secret_session, OrgFreedesktopSecretSession,
 };
+use crate::tks_dbus::CROSSROADS;
+use lazy_static::lazy_static;
+use log::{debug, error, info, trace};
+use std::error;
+use std::sync::Arc;
+use std::sync::Mutex;
+use vec_map::VecMap;
 
-impl OrgFreedesktopSecretSession for SessionImpl {
+pub fn create_session(
+    algorithm: String,
+    input: Option<&Vec<u8>>,
+) -> Result<(String, Option<Vec<u8>>), Box<dyn error::Error>> {
+    trace!("Creating new session with algorithm {}", algorithm);
+    SESSION_MANAGER
+        .lock()
+        .unwrap()
+        .new_session(algorithm, input)
+}
+
+struct Session {
+    pub id: usize,
+    algorithm: String,
+}
+
+pub trait DBusProxy {
+    fn path(&self) -> String;
+}
+
+#[derive(Debug)]
+pub struct SessionProxy {
+    id: usize,
+    pub encrypted_output: Option<EncryptedOutput>,
+}
+
+#[derive(Debug)]
+pub struct EncryptedOutput {
+    pub data: String,
+}
+
+impl SessionProxy {
+    pub fn new(id: usize, data: String) -> Self {
+        SessionProxy {
+            id,
+            encrypted_output: Some(EncryptedOutput { data }),
+        }
+    }
+}
+
+impl OrgFreedesktopSecretSession for SessionProxy {
     fn close(&mut self) -> Result<(), dbus::MethodErr> {
-        trace!("Hello from close");
+        SESSION_MANAGER.lock().unwrap().close_session(self.id);
         Ok(())
     }
 }
 
-fn register_session(cr: &mut dbus_crossroads::Crossroads) {
-    trace!("Registering org.freedesktop.Secret.Session");
-    let tok: crossroads::IfaceToken<SessionImpl> = register_org_freedesktop_secret_session(cr);
-    cr.insert("/org/freedesktop/secrets/session/s0", &[tok], SessionImpl);
-    trace!("Registered org.freedesktop.Secret.Session");
+impl DBusProxy for SessionProxy {
+    fn path(&self) -> String {
+        format!("/org/freedesktop/secrets/session/{}", self.id)
+    }
 }
 
-struct Session {
-    algorithm: String,
+impl Session {
+    pub fn get_proxy(&self) -> SessionProxy {
+        SessionProxy {
+            id: self.id,
+            encrypted_output: None,
+        }
+    }
 }
 
-struct SessionManager {
-    sessions: Vec<Session>,
+pub struct SessionManager {
+    next_session_id: usize,
+    sessions: Arc<Mutex<VecMap<Session>>>,
+}
+
+lazy_static! {
+    pub static ref SESSION_MANAGER: Mutex<SessionManager> = Mutex::new(SessionManager::new());
 }
 
 impl SessionManager {
-    fn new_session(
-        &mut self,
+    pub fn new() -> SessionManager {
+        SessionManager {
+            next_session_id: 0,
+            sessions: Arc::new(Mutex::new(VecMap::new())),
+        }
+    }
+
+    fn new_session<'a>(
+        &'a mut self,
         algorithm: String,
         input: Option<&Vec<u8>>,
-    ) -> Result<(usize, Option<Vec<u8>>), Box<dyn error::Error>> {
-        trace!("Creating new session with algorithm {}", algorithm);
+    ) -> Result<(String, Option<Vec<u8>>), Box<dyn error::Error>> {
+        debug!("Creating new session with algorithm {}", algorithm);
         match algorithm.as_str() {
-            "" => {
+            "plain" => {
                 match input {
                     Some(_) => {
                         error!("Algorithm {} does not take input", algorithm);
@@ -47,10 +104,20 @@ impl SessionManager {
                     }
                     None => (),
                 }
-                &self.sessions.push(Session { algorithm });
-                let session_num = &self.sessions.len() - 1;
+                let session_num = self.next_session_id;
+                self.next_session_id += 1;
+                let session = Session {
+                    id: session_num,
+                    algorithm: algorithm.clone(),
+                };
+                let mut ss = self.sessions.lock().unwrap();
+                ss.insert(session_num, session);
                 trace!("Created session {}", session_num);
-                Ok((session_num, None))
+                let session = ss.get(session_num).unwrap();
+                let sf = session.get_proxy();
+                let path = sf.path();
+                register_object!(register_org_freedesktop_secret_session::<SessionProxy>, sf);
+                Ok((path, None))
             }
 
             "dh-ietf1024-sha256-aes128-cbc-pkcs7" => {
@@ -70,21 +137,8 @@ impl SessionManager {
             }
         }
     }
-}
-
-lazy_static! {
-    static ref SESSION_MANAGER: Mutex<SessionManager> = Mutex::new(SessionManager {
-        sessions: Vec::new()
-    });
-}
-
-pub fn create_session(
-    algorithm: String,
-    input: Option<&Vec<u8>>,
-) -> Result<(usize, Option<Vec<u8>>), Box<dyn error::Error>> {
-    trace!("Creating new session with algorithm {}", algorithm);
-    SESSION_MANAGER
-        .lock()
-        .unwrap()
-        .new_session(algorithm, input)
+    fn close_session(&mut self, id: usize) {
+        trace!("Closing session {}", id);
+        self.sessions.lock().unwrap().remove(id);
+    }
 }

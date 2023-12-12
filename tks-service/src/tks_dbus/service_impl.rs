@@ -1,12 +1,28 @@
-pub struct ServiceImpl;
-use dbus_crossroads as crossroads;
-use log::{error, info, trace};
-
 use crate::tks_dbus::fdo::service::{
     register_org_freedesktop_secret_service, OrgFreedesktopSecretService,
 };
 use crate::tks_dbus::session_impl::create_session;
+use crate::tks_dbus::session_impl::DBusProxy;
 use dbus::arg;
+use dbus_crossroads as crossroads;
+use log::{debug, error, info, trace};
+
+pub struct ServiceProxy {}
+pub struct ServiceImpl {}
+
+impl ServiceImpl {
+    pub fn new() -> ServiceImpl {
+        ServiceImpl {}
+    }
+    pub fn get_proxy(&self) -> ServiceProxy {
+        ServiceProxy {}
+    }
+}
+impl DBusProxy for ServiceProxy {
+    fn path(&self) -> String {
+        "/org/freedesktop/secrets".to_string()
+    }
+}
 
 impl OrgFreedesktopSecretService for ServiceImpl {
     fn open_session(
@@ -20,13 +36,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         ),
         dbus::MethodErr,
     > {
-        trace!("open_session {}", algorithm);
+        debug!("open_session {}", algorithm);
         match create_session(algorithm, arg::cast::<Vec<u8>>(&input.0)) {
-            Ok((num, out)) => {
-                let path = format!("/org/freedesktop/secrets/session/{}", num);
+            Ok((path, vector)) => {
                 let path = dbus::Path::from(path);
-                let output = match out {
-                    Some(_) => arg::Variant(Box::new(out.unwrap()) as Box<dyn arg::RefArg>),
+                let output = match vector {
+                    Some(e) => arg::Variant(Box::new(e) as Box<dyn arg::RefArg>),
                     None => arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg>),
                 };
                 Ok((output, path))
@@ -99,11 +114,4 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         trace!("Hello from collections");
         Ok(vec![])
     }
-}
-
-pub fn register_service(cr: &mut dbus_crossroads::Crossroads) {
-    trace!("Registering service...");
-    let tok: crossroads::IfaceToken<ServiceImpl> = register_org_freedesktop_secret_service(cr);
-    cr.insert("/org/freedesktop/secrets", &[tok], ServiceImpl);
-    trace!("Service registered successfully");
 }

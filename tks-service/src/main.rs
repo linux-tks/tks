@@ -1,17 +1,14 @@
 // Purpose: Main entry point for the program.
 //
 // Author: Valentin Rusu
+#![feature(lazy_cell)]
 
 mod tks_dbus;
-extern crate pretty_env_logger;
-#[macro_use]
 extern crate log;
+extern crate pretty_env_logger;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     pretty_env_logger::init();
-    trace!("Starting server...");
-    match tks_dbus::start_server() {
-        Ok(_) => info!("Server started successfully"),
-        Err(e) => error!("Server failed to start: {}", e),
-    }
+    tks_dbus::start_server().await;
 }
