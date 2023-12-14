@@ -1,10 +1,7 @@
-use crate::tks_dbus::fdo::service::{
-    register_org_freedesktop_secret_service, OrgFreedesktopSecretService,
-};
+use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::session_impl::create_session;
 use crate::tks_dbus::session_impl::DBusProxy;
 use dbus::arg;
-use dbus_crossroads as crossroads;
 use log::{debug, error, info, trace};
 
 pub struct ServiceProxy {}
@@ -61,28 +58,43 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("Hello from create_collection");
-        Ok((dbus::Path::from("/"), dbus::Path::from("/")))
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error creating collection: {}",
+            "Not implemented"
+        )));
     }
     fn search_items(
         &mut self,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr> {
         trace!("Hello fromi search_items");
-        Ok((vec![], vec![]))
+        // Ok((vec![], vec![]))
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error searching items: {}",
+            "Not implemented"
+        )));
     }
     fn unlock(
         &mut self,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("Hello fromi unlock");
-        Ok((vec![], dbus::Path::from("/")))
+        // Ok((vec![], dbus::Path::from("/")))
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error unlocking items: {}",
+            "Not implemented"
+        )));
     }
     fn lock(
         &mut self,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("Hello from lock");
-        Ok((vec![], dbus::Path::from("/")))
+        // Ok((vec![], dbus::Path::from("/")))
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error locking items: {}",
+            "Not implemented"
+        )));
     }
     fn get_secrets(
         &mut self,
@@ -96,7 +108,11 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         dbus::MethodErr,
     > {
         trace!("Hello from get_secrets");
-        Ok(::std::collections::HashMap::new())
+        // Ok(::std::collections::HashMap::new())
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error getting secrets: {}",
+            "Not implemented"
+        )));
     }
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         trace!("Hello from read_alias");
@@ -108,10 +124,18 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         collection: dbus::Path<'static>,
     ) -> Result<(), dbus::MethodErr> {
         trace!("Hello from set_alias");
-        Ok(())
+        // Ok(())
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error setting alias: {}",
+            "Not implemented"
+        )));
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("Hello from collections");
-        Ok(vec![])
+        // Ok(vec![])
+        return Err(dbus::MethodErr::failed(&format!(
+            "Error getting collections: {}",
+            "Not implemented"
+        )));
     }
 }

@@ -41,15 +41,6 @@ pub struct EncryptedOutput {
     pub data: String,
 }
 
-impl SessionProxy {
-    pub fn new(id: usize, data: String) -> Self {
-        SessionProxy {
-            id,
-            encrypted_output: Some(EncryptedOutput { data }),
-        }
-    }
-}
-
 impl OrgFreedesktopSecretSession for SessionProxy {
     fn close(&mut self) -> Result<(), dbus::MethodErr> {
         SESSION_MANAGER.lock().unwrap().close_session(self.id);

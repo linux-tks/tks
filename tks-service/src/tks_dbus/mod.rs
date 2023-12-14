@@ -1,6 +1,7 @@
-mod fdo;
-mod service_impl;
-mod session_impl;
+pub mod fdo;
+
+pub mod service_impl;
+pub mod session_impl;
 
 use crate::tks_dbus::fdo::service::register_org_freedesktop_secret_service;
 use crate::tks_dbus::service_impl::ServiceImpl;
@@ -9,7 +10,7 @@ use dbus::message::MatchRule;
 use dbus_tokio::connection;
 use futures::future;
 use lazy_static::lazy_static;
-use log::{debug, error, info, trace};
+use log::debug;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -92,46 +93,17 @@ pub async fn start_server() {
     unreachable!();
 }
 
+// pub fn add(left: usize, right: usize) -> usize {
+//     left + right
+// }
+//
 // #[cfg(test)]
 // mod tests {
-//     TODO - figure out how to test this as for the moment it indefinitely hangs
 //     use super::*;
-//     use std::sync::Arc;
-//     use std::sync::Mutex;
-//     use std::thread;
-//     use tokio::time::{error::Elapsed, timeout, Duration};
-//     #[tokio::test]
-//     async fn test_start_server() {
-//         let start_status = Arc::new(Mutex::new(false));
 //
-//         let result = timeout(Duration::from_secs(10), async {
-//             let start_status = Arc::clone(&start_status);
-//             let c = thread::spawn(move || {
-//                 let mut result = start_status.lock().unwrap();
-//                 *result = match start_server() {
-//                     Ok(_) => true,
-//                     Err(e) => {
-//                         error!("Server failed to start: {}", e);
-//                         false
-//                     }
-//                 }
-//             });
-//             c.join().unwrap();
-//         })
-//         .await;
-//
-//         match result {
-//             Ok(_) => {
-//                 panic!("Server should never return when started without errors");
-//             }
-//             Err(Elapsed { .. }) => {
-//                 assert!(start_status.lock().unwrap().clone());
-//             }
-//             Err(e) => {
-//                 panic!("Server failed to start: {}", e);
-//             }
-//         }
+//     #[test]
+//     fn it_works() {
+//         let result = add(2, 2);
+//         assert_eq!(result, 4);
 //     }
-//     #[tokio::main]
-//     async fn main() {}
 // }
