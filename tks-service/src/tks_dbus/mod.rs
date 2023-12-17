@@ -1,5 +1,6 @@
 pub mod fdo;
 
+pub mod collection_impl;
 pub mod service_impl;
 pub mod session_impl;
 
@@ -51,12 +52,6 @@ pub async fn start_server() {
     {
         debug!("Registering org.freedesktop.Secret.Service");
         let mut crossroads = CROSSROADS.lock().unwrap();
-        // crossroads.set_async_support(Some((
-        //     c.clone(),
-        //     Box::new(|x| {
-        //         tokio::spawn(x);
-        //     }),
-        // )));
         let itf = register_org_freedesktop_secret_service(&mut crossroads);
         crossroads.insert("/org/freedesktop/secrets", &[itf], ServiceImpl {});
     }

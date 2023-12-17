@@ -3,6 +3,8 @@
 // Author: Valentin Rusu
 #![feature(lazy_cell)]
 
+mod settings;
+
 extern crate log;
 extern crate pretty_env_logger;
 extern crate tks_service;

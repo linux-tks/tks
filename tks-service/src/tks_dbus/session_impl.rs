@@ -26,12 +26,12 @@ struct Session {
     algorithm: String,
 }
 
-pub trait DBusProxy {
+pub trait DBusHandle {
     fn path(&self) -> String;
 }
 
 #[derive(Debug)]
-pub struct SessionProxy {
+pub struct SessionHandle {
     id: usize,
     pub encrypted_output: Option<EncryptedOutput>,
 }
@@ -41,22 +41,22 @@ pub struct EncryptedOutput {
     pub data: String,
 }
 
-impl OrgFreedesktopSecretSession for SessionProxy {
+impl OrgFreedesktopSecretSession for SessionHandle {
     fn close(&mut self) -> Result<(), dbus::MethodErr> {
         SESSION_MANAGER.lock().unwrap().close_session(self.id);
         Ok(())
     }
 }
 
-impl DBusProxy for SessionProxy {
+impl DBusHandle for SessionHandle {
     fn path(&self) -> String {
         format!("/org/freedesktop/secrets/session/{}", self.id)
     }
 }
 
 impl Session {
-    pub fn get_proxy(&self) -> SessionProxy {
-        SessionProxy {
+    pub fn get_dbus_handle(&self) -> SessionHandle {
+        SessionHandle {
             id: self.id,
             encrypted_output: None,
         }
@@ -105,9 +105,9 @@ impl SessionManager {
                 ss.insert(session_num, session);
                 trace!("Created session {}", session_num);
                 let session = ss.get(session_num).unwrap();
-                let sf = session.get_proxy();
+                let sf = session.get_dbus_handle();
                 let path = sf.path();
-                register_object!(register_org_freedesktop_secret_session::<SessionProxy>, sf);
+                register_object!(register_org_freedesktop_secret_session::<SessionHandle>, sf);
                 Ok((path, None))
             }
 

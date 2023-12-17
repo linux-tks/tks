@@ -1,0 +1,3 @@
+# default configuration options
+[storage]
+path = "$HOME/.local/share/tks-service/storage"
