@@ -8,6 +8,7 @@ mod fdo;
 #[cfg(test)]
 mod tests {
     use crate::fdo::service_client::OrgFreedesktopSecretService;
+    use crate::fdo::service_client::OrgFreedesktopSecretServiceCollectionCreated;
     use dbus::arg;
     use dbus::arg::Variant;
     use dbus::nonblock;
@@ -21,11 +22,14 @@ mod tests {
     extern crate pretty_env_logger;
     use lazy_static::lazy_static;
     use log::{debug, error, info, trace};
+    use std::sync::mpsc::{Receiver, Sender};
     use std::sync::Arc;
     use std::sync::Mutex;
+    use tks_service::settings::SETTINGS;
 
     type ServiceProxy = nonblock::Proxy<'static, Arc<nonblock::SyncConnection>>;
     struct TestFixtureData {
+        conn: Arc<nonblock::SyncConnection>,
         service_proxy: ServiceProxy,
         stable: bool,
     }
@@ -49,9 +53,10 @@ mod tests {
                 "org.freedesktop.secrets",
                 "/org/freedesktop/secrets",
                 Duration::from_secs(5),
-                conn,
+                conn.clone(),
             );
             TestFixtureData {
+                conn,
                 service_proxy,
                 stable: false,
             }
@@ -73,6 +78,17 @@ mod tests {
             Arc::new(Mutex::new(TestFixtureData::new()));
     }
 
+    macro_rules! connection {
+        () => {
+            TEST_FIXTURE_DATA
+                .lock()
+                .unwrap()
+                .stable()
+                .await
+                .conn
+                .clone()
+        };
+    }
     macro_rules! service_proxy {
         () => {
             TEST_FIXTURE_DATA
@@ -102,13 +118,33 @@ mod tests {
 
     #[tokio::test]
     async fn test_create_collection_no_prompt() {
-        let mut props = arg::PropMap::new();
         let coll_name = "collection1";
+        let mr_created = dbus::message::MatchRule::new_signal(
+            "org.freedesktop.Secret.Service",
+            "CollectionCreated",
+        );
+
+        let s = service_proxy!().clone();
+
+        {
+            let c_clone = s.connection.clone();
+            tokio::spawn(async move {
+                c_clone.add_match(mr_created).await.unwrap().cb(
+                    |_, s: OrgFreedesktopSecretServiceCollectionCreated| {
+                        debug!("CollectionCreated: {:?}", s);
+                        true
+                    },
+                );
+                debug!("Received CollectionCreated signal");
+            });
+        }
+
+        let mut props = arg::PropMap::new();
         props.insert(
             "org.freedesktop.Secret.Collection.Label".to_string(),
             Variant(Box::new("collection1".to_string())),
         );
-        let f = service_proxy!().create_collection(props, coll_name);
+        let f = s.create_collection(props, "");
         let (coll_path, prompt_path) = f.await.unwrap();
         debug!("coll_path: {}", coll_path);
         debug!("prompt_path: {}", prompt_path);
@@ -117,7 +153,14 @@ mod tests {
         let re = Regex::new(r"/org/freedesktop/secrets/collection/(.*)").unwrap();
         assert!(coll_name == &re.captures(&coll_path.to_string()).unwrap()[1]);
 
-        // TODO check that the collection was created on disk
-        // TODO checkt that the collections is being reported back by the service
+        // wait a bit for the signal to arrive
+        sleep(Duration::from_millis(300)).await;
+
+        let storage_path: &str = &SETTINGS.lock().unwrap().storage.path;
+        assert!(std::path::Path::new(&storage_path).exists());
+        let collection_path = format!("{}/{}", storage_path, coll_name);
+        assert!(std::path::Path::new(&collection_path).exists());
     }
+    // TODO test_create_collection_with_prompt - this should be a case where the collection already
+    // exists
 }

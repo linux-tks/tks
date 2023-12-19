@@ -1,7 +1,10 @@
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
+use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
 use crate::tks_dbus::session_impl::create_session;
 use crate::tks_dbus::session_impl::DBusHandle;
+use crate::tks_dbus::MESSAGE_SENDER;
+use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, info, trace};
 use std::collections::HashMap;
@@ -108,9 +111,19 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .create_collection(&label, &string_props)
         {
             Ok(_) => {
-                let prompt_path = dbus::Path::from("/");
                 let collection_path =
                     dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", label));
+                let collection_path_clone = collection_path.clone();
+                tokio::spawn(async move {
+                    debug!("Sending CollectionCreated signal");
+                    MESSAGE_SENDER.lock().unwrap().send_message(
+                        OrgFreedesktopSecretServiceCollectionCreated {
+                            collection: collection_path_clone.clone(),
+                        }
+                        .to_emit_message(&collection_path_clone),
+                    );
+                });
+                let prompt_path = dbus::Path::from("/");
                 return Ok((collection_path, prompt_path));
             }
             Err(e) => {

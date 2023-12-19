@@ -7,7 +7,9 @@ pub mod session_impl;
 use crate::tks_dbus::fdo::service::register_org_freedesktop_secret_service;
 use crate::tks_dbus::service_impl::ServiceImpl;
 use dbus::channel::MatchingReceiver;
+use dbus::channel::Sender;
 use dbus::message::MatchRule;
+use dbus::*;
 use dbus_tokio::connection;
 use futures::future;
 use lazy_static::lazy_static;
@@ -18,6 +20,32 @@ use std::sync::Mutex;
 lazy_static! {
     pub static ref CROSSROADS: Arc<Mutex<dbus_crossroads::Crossroads>> =
         Arc::new(Mutex::new(dbus_crossroads::Crossroads::new()));
+    pub static ref MESSAGE_SENDER: Arc<Mutex<MessageSender>> =
+        Arc::new(Mutex::new(MessageSender::new()));
+}
+
+pub struct MessageSender {
+    connection: Option<Arc<nonblock::SyncConnection>>,
+}
+
+impl MessageSender {
+    fn new() -> Self {
+        MessageSender { connection: None }
+    }
+    fn set_connection(&mut self, connection: Arc<nonblock::SyncConnection>) {
+        self.connection = Some(connection);
+    }
+    pub fn send_message(&self, msg: Message) {
+        debug!("Sending message: {:?}", msg);
+        match &self.connection {
+            Some(c) => {
+                c.send(msg).unwrap();
+            }
+            None => {
+                panic!("No connection");
+            }
+        }
+    }
 }
 
 #[macro_export]
@@ -48,6 +76,8 @@ pub async fn start_server() {
         let err = resource.await;
         panic!("Connection has died: {:?}", err);
     });
+
+    MESSAGE_SENDER.lock().unwrap().set_connection(c.clone());
 
     {
         debug!("Registering org.freedesktop.Secret.Service");
@@ -87,18 +117,3 @@ pub async fn start_server() {
     future::pending::<()>().await;
     unreachable!();
 }
-
-// pub fn add(left: usize, right: usize) -> usize {
-//     left + right
-// }
-//
-// #[cfg(test)]
-// mod tests {
-//     use super::*;
-//
-//     #[test]
-//     fn it_works() {
-//         let result = add(2, 2);
-//         assert_eq!(result, 4);
-//     }
-// }
