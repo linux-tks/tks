@@ -1071,6 +1071,7 @@ version = "0.1.0"
 name = "tks-service"
 version = "0.1.0"
 dependencies = [
+ "base64 0.21.5",
  "config",
  "dbus",
  "dbus-crossroads",
@@ -1082,6 +1083,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_derive",
+ "serde_json",
  "shellexpand",
  "tokio",
  "tss-esapi",

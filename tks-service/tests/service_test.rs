@@ -110,6 +110,13 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_read_alias() {
+        let f = service_proxy!().read_alias("default");
+        let path = f.await.unwrap().to_string();
+        assert!(path != "/");
+    }
+
+    #[tokio::test]
     #[should_panic]
     async fn test_create_collection_error_no_label() {
         let f = service_proxy!().create_collection(arg::PropMap::new(), "collection1");

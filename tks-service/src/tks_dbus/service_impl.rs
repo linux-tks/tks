@@ -70,7 +70,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         properties: arg::PropMap,
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
-        debug!("create_collection {}", alias);
+        debug!("create_collection alias={}", alias);
         // the DBus spec says that properties is a dict of string:variant, but really it should be
         // a dict of string:String
         let mut errors: Vec<String> = Vec::new();
@@ -186,9 +186,30 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             "Not implemented"
         )));
     }
+
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
-        trace!("Hello from read_alias");
-        Ok(dbus::Path::from("/"))
+        debug!("read_alias {}", name);
+        match name.as_str() {
+            "default" => match STORAGE.lock().unwrap().read_alias(&name) {
+                Ok(name) => Ok(dbus::Path::from(format!(
+                    "/org/freedesktop/secrets/collection/{}",
+                    name
+                ))),
+                Err(e) => {
+                    error!("Error reading alias: {}", e);
+                    return Err(dbus::MethodErr::failed(&format!(
+                        "Error reading alias: {}",
+                        e
+                    )));
+                }
+            },
+            _ => {
+                return Err(dbus::MethodErr::failed(&format!(
+                    "Error reading alias: {}",
+                    "Not implemented"
+                )));
+            }
+        }
     }
     fn set_alias(
         &mut self,
