@@ -28,8 +28,8 @@ struct Item {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Collection {
-    name: String,
+pub struct Collection {
+    pub name: String,
     items: Option<Vec<Item>>,
     aliases: Option<Vec<String>>,
 
@@ -39,7 +39,7 @@ struct Collection {
 
 pub struct Storage {
     path: OsString,
-    collections: Vec<Collection>,
+    pub collections: Vec<Collection>,
 }
 
 lazy_static! {
@@ -71,10 +71,11 @@ impl Storage {
             Ok(name) => name,
             Err(_) => {
                 debug!("Creating default collection");
-                let _ = storage.create_collection("default", &HashMap::new());
+                let _ = storage.create_collection("default", "", &HashMap::new());
                 for collection in storage.collections.iter_mut() {
                     if collection.name == "default" {
                         collection.aliases = Some(vec!["default".to_string()]);
+                        Self::save_collection(collection)?;
                     }
                 }
                 "default".to_string()
@@ -108,12 +109,19 @@ impl Storage {
     pub fn create_collection(
         &mut self,
         name: &str,
+        alias: &str,
         _properties: &HashMap<String, String>,
     ) -> Result<(), std::io::Error> {
         let mut collection_path = PathBuf::new();
         collection_path.push(self.path.clone());
         collection_path.push(name);
-        let coll = Collection::new(name, collection_path.as_os_str());
+        let mut coll = Collection::new(name, collection_path.as_os_str());
+        match alias {
+            "" => {}
+            _ => {
+                coll.aliases = Some(vec![alias.to_string()]);
+            }
+        }
         Self::save_collection(&coll)?;
         self.collections.push(coll);
         debug!(

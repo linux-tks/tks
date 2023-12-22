@@ -71,6 +71,18 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
         debug!("create_collection alias={}", alias);
+
+        match alias.as_str() {
+            "default" => {
+                let prompt_path = dbus::Path::from("/");
+                // TODO: should we emit the CollectionCreated signal here?
+                return Ok((
+                    dbus::Path::from("/org/freedesktop/secrets/collection/default"),
+                    prompt_path,
+                ));
+            }
+            _ => {}
+        }
         // the DBus spec says that properties is a dict of string:variant, but really it should be
         // a dict of string:String
         let mut errors: Vec<String> = Vec::new();
@@ -108,7 +120,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         match STORAGE
             .lock()
             .unwrap()
-            .create_collection(&label, &string_props)
+            .create_collection(&label, &alias, &string_props)
         {
             Ok(_) => {
                 let collection_path =
@@ -224,11 +236,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         )));
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
-        trace!("Hello from collections");
-        // Ok(vec![])
-        return Err(dbus::MethodErr::failed(&format!(
-            "Error getting collections: {}",
-            "Not implemented"
-        )));
+        debug!("collections");
+        let collections = &STORAGE.lock().unwrap().collections;
+        let c = collections
+            .into_iter()
+            .map(|c| dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", c.name)))
+            .collect();
+        Ok(c)
     }
 }
