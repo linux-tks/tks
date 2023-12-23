@@ -2,6 +2,7 @@ use crate::register_object;
 use crate::tks_dbus::fdo::session::{
     register_org_freedesktop_secret_session, OrgFreedesktopSecretSession,
 };
+use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::CROSSROADS;
 use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
@@ -24,10 +25,6 @@ pub fn create_session(
 struct Session {
     pub id: usize,
     algorithm: String,
-}
-
-pub trait DBusHandle {
-    fn path(&self) -> dbus::Path<'static>;
 }
 
 #[derive(Debug)]

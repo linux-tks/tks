@@ -1,6 +1,7 @@
 pub mod fdo;
 
 pub mod collection_impl;
+pub mod item_impl;
 pub mod service_impl;
 pub mod session_impl;
 
@@ -22,6 +23,10 @@ lazy_static! {
         Arc::new(Mutex::new(dbus_crossroads::Crossroads::new()));
     pub static ref MESSAGE_SENDER: Arc<Mutex<MessageSender>> =
         Arc::new(Mutex::new(MessageSender::new()));
+}
+
+pub trait DBusHandle {
+    fn path(&self) -> dbus::Path<'static>;
 }
 
 pub struct MessageSender {
@@ -61,6 +66,36 @@ macro_rules! register_object {
             }
             debug!("Registered {}", p);
         });
+    };
+}
+
+#[macro_export]
+macro_rules! convert_prop_map {
+    ($properties:expr) => {
+        // the DBus spec says that properties is a dict of string:variant, but really it should be
+        // a dict of string:String
+        {
+            let mut errors = Vec::new();
+            let string_props: HashMap<String, String> = $properties
+                .iter()
+                .map(|(k, v)| match arg::cast::<String>(&v.0) {
+                    Some(s) => (k.clone(), s.clone()),
+                    None => {
+                        debug!("Error casting property {} to string", k);
+                        errors.push(format!("Property {} should be a string", k));
+                        (k.clone(), String::new())
+                    }
+                })
+                .collect();
+
+            if errors.len() > 0 {
+                return Err(dbus::MethodErr::failed(&format!(
+                    "Error creating collection: {}",
+                    errors.join(", ")
+                )));
+            }
+            (string_props, errors)
+        }
     };
 }
 

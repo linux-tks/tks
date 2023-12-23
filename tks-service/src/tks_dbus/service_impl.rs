@@ -1,18 +1,20 @@
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
-use crate::tks_dbus::session_impl::create_session;
-use crate::tks_dbus::session_impl::DBusHandle;
+use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::MESSAGE_SENDER;
 use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, info, trace};
 use std::collections::HashMap;
 extern crate pretty_env_logger;
+use crate::convert_prop_map;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::{CollectionHandle, CollectionImpl};
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
+use crate::tks_dbus::session_impl::create_session;
 use crate::tks_dbus::CROSSROADS;
+
 use dbus::arg;
 
 pub struct ServiceHandle {}
@@ -95,27 +97,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             }
             _ => {}
         }
-        // the DBus spec says that properties is a dict of string:variant, but really it should be
-        // a dict of string:String
-        let mut errors: Vec<String> = Vec::new();
-        let string_props: HashMap<String, String> = properties
-            .iter()
-            .map(|(k, v)| match arg::cast::<String>(&v.0) {
-                Some(s) => (k.clone(), s.clone()),
-                None => {
-                    debug!("Error casting property {} to string", k);
-                    errors.push(format!("Property {} should be a string", k));
-                    (k.clone(), String::new())
-                }
-            })
-            .collect();
-
-        if errors.len() > 0 {
-            return Err(dbus::MethodErr::failed(&format!(
-                "Error creating collection: {}",
-                errors.join(", ")
-            )));
-        }
+        let (string_props, errors) = convert_prop_map!(properties);
 
         // now check if user specified the org.freedesktop.Secret.Collection.Label property
         let label = match string_props.get("org.freedesktop.Secret.Collection.Label") {

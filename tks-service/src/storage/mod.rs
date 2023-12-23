@@ -13,15 +13,17 @@ use std::vec::Vec;
 
 use crate::settings::SETTINGS;
 
-#[derive(Debug)]
+#[derive(Serialize, Deserialize, Debug)]
 struct ItemData {
+    parameters: Vec<u8>,
     data: Vec<u8>,
+    content_type: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 struct Item {
     #[serde(skip)]
-    data: Option<ItemData>,
+    data: Option<ItemData>, // when Item is locked, this is None
 
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     attributes: HashMap<String, String>,
@@ -36,6 +38,8 @@ pub struct Collection {
 
     #[serde(skip)]
     path: OsString,
+    #[serde(skip)]
+    locked: bool,
 }
 
 pub struct Storage {
@@ -72,13 +76,7 @@ impl Storage {
             Ok(name) => name,
             Err(_) => {
                 debug!("Creating default collection");
-                let _ = storage.create_collection("default", "", &HashMap::new());
-                for collection in storage.collections.iter_mut() {
-                    if collection.name == "default" {
-                        collection.aliases = Some(vec!["default".to_string()]);
-                        Self::save_collection(collection)?;
-                    }
-                }
+                let _ = storage.create_collection("default", "default", &HashMap::new());
                 "default".to_string()
             }
         };
@@ -96,6 +94,21 @@ impl Storage {
                 std::io::ErrorKind::NotFound,
                 format!("Alias '{}' not found", alias),
             ))
+    }
+
+    pub fn with_collection<F, T>(&mut self, alias: &str, f: F) -> Result<T, std::io::Error>
+    where
+        F: FnOnce(&mut Collection) -> T,
+    {
+        let mut collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.name == alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Collection '{}' not found", alias),
+            ))?;
+        Ok(f(&mut collection))
     }
 
     /// Create a new collection
@@ -172,8 +185,51 @@ impl Collection {
             path: path.to_os_string(),
             items: None,
             aliases: None,
+            locked: false,
         };
 
         collection
+    }
+
+    pub fn create_item(
+        &mut self,
+        properties: HashMap<String, String>,
+        secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
+        replace: bool,
+    ) -> Result<(), std::io::Error> {
+        assert!(self.locked == false);
+        let item = Item {
+            data: Some(ItemData {
+                parameters: secret.1,
+                data: secret.2,
+                content_type: secret.3,
+            }),
+            attributes: properties,
+        };
+        match self.items.as_mut() {
+            Some(items) => {
+                let index = items.iter().position(|i| i.attributes == item.attributes);
+                match index {
+                    Some(index) => {
+                        if replace {
+                            items[index] = item;
+                        } else {
+                            return Err(std::io::Error::new(
+                                std::io::ErrorKind::AlreadyExists,
+                                format!("Item already exists"),
+                            ));
+                        }
+                    }
+                    None => {
+                        items.push(item);
+                    }
+                }
+            }
+            None => {
+                self.items = Some(vec![item]);
+            }
+        }
+        Storage::save_collection(self)?;
+        Ok(())
     }
 }
