@@ -9,6 +9,10 @@ use log;
 use log::{debug, error, info, trace};
 use std::collections::HashMap;
 extern crate pretty_env_logger;
+use crate::register_object;
+use crate::tks_dbus::collection_impl::{CollectionHandle, CollectionImpl};
+use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
+use crate::tks_dbus::CROSSROADS;
 use dbus::arg;
 
 pub struct ServiceHandle {}
@@ -16,6 +20,14 @@ pub struct ServiceImpl {}
 
 impl ServiceImpl {
     pub fn new() -> ServiceImpl {
+        let coll = CollectionImpl::new("default");
+        tokio::spawn(async move {
+            debug!("Registering default collection");
+            register_object!(
+                register_org_freedesktop_secret_collection::<CollectionHandle>,
+                coll.get_dbus_handle()
+            );
+        });
         ServiceImpl {}
     }
     pub fn get_dbus_handle(&self) -> ServiceHandle {
@@ -23,8 +35,8 @@ impl ServiceImpl {
     }
 }
 impl DBusHandle for ServiceHandle {
-    fn path(&self) -> String {
-        "/org/freedesktop/secrets".to_string()
+    fn path(&self) -> dbus::Path<'static> {
+        "/org/freedesktop/secrets".to_string().into()
     }
 }
 
@@ -123,8 +135,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .create_collection(&label, &alias, &string_props)
         {
             Ok(_) => {
-                let collection_path =
-                    dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", label));
+                let coll = CollectionImpl::new(&label);
+                let collection_path = coll.get_dbus_handle().path();
+                register_object!(
+                    register_org_freedesktop_secret_collection::<CollectionHandle>,
+                    coll.get_dbus_handle()
+                );
                 let collection_path_clone = collection_path.clone();
                 tokio::spawn(async move {
                     debug!("Sending CollectionCreated signal");

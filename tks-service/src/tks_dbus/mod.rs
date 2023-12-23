@@ -51,7 +51,7 @@ impl MessageSender {
 #[macro_export]
 macro_rules! register_object {
     ($iface:expr, $f:expr) => {
-        tokio::spawn(async {
+        tokio::spawn(async move {
             let p = $f.path().to_string();
             debug!("Registering {}", p);
             {
@@ -83,7 +83,7 @@ pub async fn start_server() {
         debug!("Registering org.freedesktop.Secret.Service");
         let mut crossroads = CROSSROADS.lock().unwrap();
         let itf = register_org_freedesktop_secret_service(&mut crossroads);
-        crossroads.insert("/org/freedesktop/secrets", &[itf], ServiceImpl {});
+        crossroads.insert("/org/freedesktop/secrets", &[itf], ServiceImpl::new());
     }
 
     let nr = c

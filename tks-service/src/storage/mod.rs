@@ -29,6 +29,7 @@ struct Item {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Collection {
+    schema_version: u8,
     pub name: String,
     items: Option<Vec<Item>>,
     aliases: Option<Vec<String>>,
@@ -166,6 +167,7 @@ impl Storage {
 impl Collection {
     fn new(name: &str, path: &OsStr) -> Collection {
         let collection = Collection {
+            schema_version: 1,
             name: name.to_string(),
             path: path.to_os_string(),
             items: None,

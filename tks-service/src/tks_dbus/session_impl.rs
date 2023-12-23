@@ -27,7 +27,7 @@ struct Session {
 }
 
 pub trait DBusHandle {
-    fn path(&self) -> String;
+    fn path(&self) -> dbus::Path<'static>;
 }
 
 #[derive(Debug)]
@@ -49,8 +49,8 @@ impl OrgFreedesktopSecretSession for SessionHandle {
 }
 
 impl DBusHandle for SessionHandle {
-    fn path(&self) -> String {
-        format!("/org/freedesktop/secrets/session/{}", self.id)
+    fn path(&self) -> dbus::Path<'static> {
+        format!("/org/freedesktop/secrets/session/{}", self.id).into()
     }
 }
 
@@ -108,7 +108,7 @@ impl SessionManager {
                 let sf = session.get_dbus_handle();
                 let path = sf.path();
                 register_object!(register_org_freedesktop_secret_session::<SessionHandle>, sf);
-                Ok((path, None))
+                Ok((path.to_string(), None))
             }
 
             "dh-ietf1024-sha256-aes128-cbc-pkcs7" => {

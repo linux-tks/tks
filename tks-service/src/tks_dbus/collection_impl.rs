@@ -1,6 +1,7 @@
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::session_impl::DBusHandle;
 use dbus::arg;
+use log::debug;
 
 pub struct CollectionHandle {
     alias: String,
@@ -10,9 +11,9 @@ pub struct CollectionImpl {
 }
 
 impl CollectionImpl {
-    pub fn new() -> CollectionImpl {
+    pub fn new(alias: &str) -> CollectionImpl {
         CollectionImpl {
-            alias: String::new(),
+            alias: alias.to_string(),
         }
     }
     pub fn get_dbus_handle(&self) -> CollectionHandle {
@@ -22,14 +23,20 @@ impl CollectionImpl {
     }
 }
 impl DBusHandle for CollectionHandle {
-    fn path(&self) -> String {
-        format!("/org/freedesktop/secrets/collection/{}", self.alias).to_string()
+    fn path(&self) -> dbus::Path<'static> {
+        format!("/org/freedesktop/secrets/collection/{}", self.alias)
+            .to_string()
+            .into()
     }
 }
 
-impl OrgFreedesktopSecretCollection for CollectionImpl {
+impl OrgFreedesktopSecretCollection for CollectionHandle {
     fn delete(&mut self) -> Result<dbus::Path<'static>, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        debug!("delete called on '{}'", self.alias);
+        match self.alias.as_str() {
+            "default" => return Err(dbus::MethodErr::failed(&"Cannot delete default collection")),
+            _ => Err(dbus::MethodErr::failed(&"Not implemented")),
+        }
     }
     fn search_items(
         &mut self,
