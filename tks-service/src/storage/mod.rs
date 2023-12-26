@@ -15,20 +15,22 @@ use std::vec::Vec;
 use crate::settings::SETTINGS;
 
 #[derive(Serialize, Deserialize, Debug)]
-struct ItemData {
+pub struct ItemData {
     parameters: Vec<u8>,
     data: Vec<u8>,
-    content_type: String,
+    pub content_type: String,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Item {
-    pub alias: String,
+    pub label: String,
+    pub created: u64,
+    pub modified: u64,
     #[serde(skip)]
-    data: Option<ItemData>, // when Item is locked, this is None
+    pub data: Option<ItemData>, // when Item is locked, this is None
 
     #[serde(skip_serializing_if = "HashMap::is_empty")]
-    attributes: HashMap<String, String>,
+    pub attributes: HashMap<String, String>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -113,6 +115,79 @@ impl Storage {
                 format!("Collection '{}' not found", alias),
             ))?;
         Ok(f(&mut collection))
+    }
+
+    /// This performs a read-only operation on a collection item
+    /// for RW operations, use modify_item
+    pub fn with_item<F, T>(
+        &mut self,
+        collection_alias: &str,
+        item_alias: &str,
+        f: F,
+    ) -> Result<T, std::io::Error>
+    where
+        F: FnOnce(&Item) -> T,
+    {
+        let collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.name == collection_alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Collection '{}' not found", collection_alias),
+            ))?;
+        let item = collection
+            .items
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|i| i.label == item_alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Item '{}' not found", item_alias),
+            ))?;
+        Ok(f(&item))
+    }
+
+    pub fn modify_item<F, T>(
+        &mut self,
+        collection_alias: &str,
+        item_alias: &str,
+        f: F,
+    ) -> Result<T, std::io::Error>
+    where
+        F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
+    {
+        let collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.name == collection_alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Collection '{}' not found", collection_alias),
+            ))?;
+        let mut item = collection
+            .items
+            .as_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|i| i.label == item_alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Item '{}' not found", item_alias),
+            ))?;
+        match f(&mut item) {
+            Ok(t) => {
+                item.modified = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .into();
+                Storage::save_collection(collection)?;
+                Ok(t)
+            }
+            Err(e) => Err(e),
+        }
     }
 
     /// Create a new collection
@@ -211,14 +286,21 @@ impl Collection {
 
     pub fn create_item(
         &mut self,
-        alias: &str,
+        label: &str,
         properties: HashMap<String, String>,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(), std::io::Error> {
         assert!(self.locked == false);
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .into();
         let item = Item {
-            alias: alias.to_string(),
+            label: label.to_string(),
+            created: ts,
+            modified: ts,
             data: Some(ItemData {
                 parameters: secret.1,
                 data: secret.2,
@@ -251,5 +333,56 @@ impl Collection {
         }
         Storage::save_collection(self)?;
         Ok(())
+    }
+
+    pub fn delete_item(&mut self, label: &str) -> Result<(), std::io::Error> {
+        assert!(self.locked == false);
+        match self.items.as_mut() {
+            Some(items) => {
+                let index = items.iter().position(|i| i.label == label);
+                match index {
+                    Some(index) => {
+                        items.remove(index);
+                    }
+                    None => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::NotFound,
+                            format!("Item not found"),
+                        ));
+                    }
+                }
+            }
+            None => {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Item not found"),
+                ));
+            }
+        }
+        Storage::save_collection(self)?;
+        Ok(())
+    }
+}
+
+impl Item {
+    pub fn get_secret(
+        &self,
+        session: &str,
+    ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
+        debug!("get_secret called on '{}'", self.label);
+        // TODO here we should check if the session is authorized to access this item and use to
+        // decrypt the secret
+        match &self.data {
+            Some(data) => Ok((
+                session.to_string(),
+                data.parameters.clone(),
+                data.data.clone(),
+                data.content_type.clone(),
+            )),
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Item is locked"),
+            )),
+        }
     }
 }

@@ -56,7 +56,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         Err(dbus::MethodErr::failed(&"Not implemented"))
     }
     // d-feet example call:
-    // {"asd":GLib.Variant('s',"asd"), "sdf":GLib.Variant('s','')}, ("/",[],[],""),0])
+    // {"org.freedesktop.Secret.Item.Label":GLib.Variant('s',"test"), "org.freedesktop.Secret.Item.Attributes":GLib.Variant("a{sv}",{"prop1":GLib.Variant('s',"val1"),"prop2":GLib.Variant('s',"val2")})}, ("/",[],[],""),0
     fn create_item(
         &mut self,
         properties: arg::PropMap,
@@ -64,7 +64,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         replace: bool,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
         let item_label = match properties.get("org.freedesktop.Secret.Item.Label") {
-            Some(s) => match arg::cast::<String>(s) {
+            Some(s) => match arg::cast::<String>(&s.0) {
                 Some(s) => s.clone(),
                 None => {
                     debug!("Error creating item: label is not a string");
@@ -84,7 +84,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         };
         let mut errors = Vec::new();
         let item_attributes = match properties.get("org.freedesktop.Secret.Item.Attributes") {
-            Some(d) => match arg::cast::<arg::PropMap>(d) {
+            Some(d) => match arg::cast::<arg::PropMap>(&d.0) {
                 Some(d) => d
                     .iter()
                     .map(|(k, v)| match arg::cast::<String>(&v.0) {
@@ -158,7 +158,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                 Some(items) => {
                     let is = items
                         .iter()
-                        .map(|item| format!("{}/{}", self.path(), item.alias))
+                        .map(|item| format!("{}/{}", self.path(), item.label))
                         .collect();
                     Some(is)
                 }
