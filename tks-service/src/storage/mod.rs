@@ -9,6 +9,7 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use crate::settings::SETTINGS;
@@ -21,7 +22,8 @@ struct ItemData {
 }
 
 #[derive(Serialize, Deserialize, Debug)]
-struct Item {
+pub struct Item {
+    pub alias: String,
     #[serde(skip)]
     data: Option<ItemData>, // when Item is locked, this is None
 
@@ -33,13 +35,15 @@ struct Item {
 pub struct Collection {
     schema_version: u8,
     pub name: String,
-    items: Option<Vec<Item>>,
+    pub items: Option<Vec<Item>>,
     aliases: Option<Vec<String>>,
+    pub created: u64,
+    pub modified: u64,
 
     #[serde(skip)]
     path: OsString,
     #[serde(skip)]
-    locked: bool,
+    pub locked: bool,
 }
 
 pub struct Storage {
@@ -136,7 +140,7 @@ impl Storage {
                 coll.aliases = Some(vec![alias.to_string()]);
             }
         }
-        Self::save_collection(&coll)?;
+        Self::save_collection(&mut coll)?;
         self.collections.push(coll);
         debug!(
             "Created collection '{}' at path '{}'",
@@ -146,7 +150,7 @@ impl Storage {
         Ok(())
     }
 
-    fn save_collection(collection: &Collection) -> Result<(), std::io::Error> {
+    fn save_collection(collection: &mut Collection) -> Result<(), std::io::Error> {
         assert!(!collection.path.is_empty());
         let _ = DirBuilder::new()
             .recursive(true)
@@ -160,6 +164,12 @@ impl Storage {
             metadata_path.display()
         );
         let mut file = File::create(metadata_path)?;
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .into();
+        collection.modified = ts;
         serde_json::to_writer_pretty(&mut file, collection)?;
         Ok(())
     }
@@ -169,16 +179,22 @@ impl Storage {
         metadata_path.push(path);
         metadata_path.push("metadata.json");
 
-        let mut file = File::open(metadata_path.file_name().unwrap())?;
+        let mut file = File::open(metadata_path)?;
         let mut data = String::new();
         file.read_to_string(&mut data)?;
-        let collection: Collection = serde_json::from_str(&data)?;
+        let mut collection: Collection = serde_json::from_str(&data)?;
+        collection.path = path.as_os_str().to_os_string();
         Ok(collection)
     }
 }
 
 impl Collection {
     fn new(name: &str, path: &OsStr) -> Collection {
+        let ts = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+            .into();
         let collection = Collection {
             schema_version: 1,
             name: name.to_string(),
@@ -186,6 +202,8 @@ impl Collection {
             items: None,
             aliases: None,
             locked: false,
+            created: ts,
+            modified: ts,
         };
 
         collection
@@ -193,12 +211,14 @@ impl Collection {
 
     pub fn create_item(
         &mut self,
+        alias: &str,
         properties: HashMap<String, String>,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(), std::io::Error> {
         assert!(self.locked == false);
         let item = Item {
+            alias: alias.to_string(),
             data: Some(ItemData {
                 parameters: secret.1,
                 data: secret.2,

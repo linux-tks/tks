@@ -1,6 +1,7 @@
 // Purpose: Provides an implementation of the DBus interface for a secret item.
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandle;
+use std::collections::HashMap;
 
 pub struct ItemHandle {
     alias: String,
@@ -8,12 +9,14 @@ pub struct ItemHandle {
 
 pub struct ItemImpl {
     alias: String,
+    collection_alias: String,
 }
 
 impl ItemImpl {
-    pub fn new(alias: &str) -> ItemImpl {
+    pub fn new(alias: &str, collection_alias: &str) -> ItemImpl {
         ItemImpl {
             alias: alias.to_string(),
+            collection_alias: collection_alias.to_string(),
         }
     }
     pub fn get_dbus_handle(&self) -> ItemHandle {

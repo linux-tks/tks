@@ -55,17 +55,68 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
     ) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         Err(dbus::MethodErr::failed(&"Not implemented"))
     }
+    // d-feet example call:
+    // {"asd":GLib.Variant('s',"asd"), "sdf":GLib.Variant('s','')}, ("/",[],[],""),0])
     fn create_item(
         &mut self,
         properties: arg::PropMap,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
-        let (string_props, _errors) = convert_prop_map!(properties);
+        let item_label = match properties.get("org.freedesktop.Secret.Item.Label") {
+            Some(s) => match arg::cast::<String>(s) {
+                Some(s) => s.clone(),
+                None => {
+                    debug!("Error creating item: label is not a string");
+                    return Err(dbus::MethodErr::failed(&format!(
+                        "Error creating item: {}",
+                        "Label is not a string"
+                    )));
+                }
+            },
+            None => {
+                debug!("Error creating item: no label specified");
+                return Err(dbus::MethodErr::failed(&format!(
+                    "Error creating item: {}",
+                    "No label specified"
+                )));
+            }
+        };
+        let mut errors = Vec::new();
+        let item_attributes = match properties.get("org.freedesktop.Secret.Item.Attributes") {
+            Some(d) => match arg::cast::<arg::PropMap>(d) {
+                Some(d) => d
+                    .iter()
+                    .map(|(k, v)| match arg::cast::<String>(&v.0) {
+                        Some(s) => (k.clone(), s.clone()),
+                        None => {
+                            debug!("Error casting property {} to string", k);
+                            errors.push(format!("Property {} should be a string", k));
+                            (k.clone(), String::new())
+                        }
+                    })
+                    .collect(),
+                None => {
+                    debug!("Error creating item: no attributes specified");
+                    return Err(dbus::MethodErr::failed(&format!(
+                        "Error creating item: {}",
+                        "No attributes specified"
+                    )));
+                }
+            },
+
+            None => {
+                debug!("Error creating item: no attributes specified");
+                return Err(dbus::MethodErr::failed(&format!(
+                    "Error creating item: {}",
+                    "No attributes specified"
+                )));
+            }
+        };
         let mut storage = STORAGE.lock().unwrap();
         let rc = storage
             .with_collection(&self.alias, |collection| {
-                collection.create_item(string_props, secret, replace)
+                collection.create_item(&item_label, item_attributes, secret, replace)
             })
             .and_then(|item| item)
             .map_err(|e| {
@@ -74,7 +125,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
             });
         match rc {
             Ok(_) => {
-                let item = ItemImpl::new(&self.alias);
+                let item = ItemImpl::new(&item_label, &self.alias);
                 let item_path = item.get_dbus_handle().path();
                 register_object!(
                     register_org_freedesktop_secret_item::<ItemHandle>,
@@ -100,21 +151,72 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         }
     }
     fn items(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE
+            .lock()
+            .unwrap()
+            .with_collection(&self.alias, |collection| match &collection.items {
+                Some(items) => {
+                    let is = items
+                        .iter()
+                        .map(|item| format!("{}/{}", self.path(), item.alias))
+                        .collect();
+                    Some(is)
+                }
+                None => None,
+            }) {
+            Ok(items) => {
+                let items = items.unwrap_or(Vec::new());
+                Ok(items.into_iter().map(|i| i.into()).collect())
+            }
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error getting items for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
     fn label(&self) -> Result<String, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        Ok(self.alias.clone())
     }
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {
         Err(dbus::MethodErr::failed(&"Not implemented"))
     }
     fn locked(&self) -> Result<bool, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE
+            .lock()
+            .unwrap()
+            .with_collection(&self.alias, |collection| collection.locked)
+        {
+            Ok(locked) => Ok(locked),
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error getting locked status for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
     fn created(&self) -> Result<u64, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE
+            .lock()
+            .unwrap()
+            .with_collection(&self.alias, |collection| collection.created)
+        {
+            Ok(created) => Ok(created),
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error getting created timestamp for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
     fn modified(&self) -> Result<u64, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE
+            .lock()
+            .unwrap()
+            .with_collection(&self.alias, |collection| collection.modified)
+        {
+            Ok(modified) => Ok(modified),
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error getting modified timestamp for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
 }
