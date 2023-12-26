@@ -1,8 +1,12 @@
 // Purpose: Provides an implementation of the DBus interface for a secret item.
 use crate::storage::STORAGE;
+use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemChanged;
+use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemDeleted;
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandle;
+use crate::tks_dbus::MESSAGE_SENDER;
 use dbus::arg;
+use dbus::message::SignalArgs;
 use log::debug;
 use log::error;
 
@@ -51,6 +55,16 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                 collection.delete_item(&self.label)
             }) {
             Ok(_) => {
+                let item_path_clone = self.path().clone();
+                tokio::spawn(async move {
+                    debug!("Sending ItemDeleted signal");
+                    MESSAGE_SENDER.lock().unwrap().send_message(
+                        OrgFreedesktopSecretCollectionItemDeleted {
+                            item: item_path_clone.clone(),
+                        }
+                        .to_emit_message(&item_path_clone),
+                    );
+                });
                 let prompt_path = dbus::Path::from("/");
                 Ok(prompt_path)
             }
@@ -84,7 +98,26 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         &mut self,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
     ) -> Result<(), dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE.lock().unwrap().modify_item(
+            self.collection_alias.as_str(),
+            self.label.as_str(),
+            |item| item.set_secret(secret.0.to_string(), secret.1, secret.2, secret.3),
+        ) {
+            Ok(_) => {
+                let item_path_clone = self.path().clone();
+                tokio::spawn(async move {
+                    debug!("Sending ItemChanged signal");
+                    MESSAGE_SENDER.lock().unwrap().send_message(
+                        OrgFreedesktopSecretCollectionItemChanged {
+                            item: item_path_clone.clone(),
+                        }
+                        .to_emit_message(&item_path_clone),
+                    );
+                });
+                Ok(())
+            }
+            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+        }
     }
     fn locked(&self) -> Result<bool, dbus::MethodErr> {
         let b = STORAGE
@@ -119,21 +152,73 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                 Ok(())
             },
         ) {
-            Ok(_) => Ok(()),
+            Ok(_) => {
+                let item_path_clone = self.path().clone();
+                tokio::spawn(async move {
+                    debug!("Sending ItemChanged signal");
+                    MESSAGE_SENDER.lock().unwrap().send_message(
+                        OrgFreedesktopSecretCollectionItemChanged {
+                            item: item_path_clone.clone(),
+                        }
+                        .to_emit_message(&item_path_clone),
+                    );
+                });
+                Ok(())
+            }
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
         }
     }
     fn label(&self) -> Result<String, dbus::MethodErr> {
         Ok(self.label.clone())
     }
+
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {
-        error!("Setting label to {}", value);
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE.lock().unwrap().modify_item(
+            self.collection_alias.as_str(),
+            self.label.as_str(),
+            |item| {
+                item.label = value;
+                Ok(())
+            },
+        ) {
+            Ok(_) => {
+                let item_path_clone = self.path().clone();
+                tokio::spawn(async move {
+                    debug!("Sending ItemChanged signal");
+                    MESSAGE_SENDER.lock().unwrap().send_message(
+                        OrgFreedesktopSecretCollectionItemChanged {
+                            item: item_path_clone.clone(),
+                        }
+                        .to_emit_message(&item_path_clone),
+                    );
+                });
+                Ok(())
+            }
+            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+        }
     }
+
     fn type_(&self) -> Result<String, dbus::MethodErr> {
-        error!("Getting type");
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match self.locked() {
+            Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
+            Ok(false) => match STORAGE.lock().unwrap().with_item(
+                self.collection_alias.as_str(),
+                self.label.as_str(),
+                |item| match item.data {
+                    Some(ref data) => Ok(data.content_type.clone()),
+                    None => Err(dbus::MethodErr::failed(&"Item not found")),
+                },
+            ) {
+                Ok(content_type) => match content_type {
+                    Ok(content_type) => Ok(content_type),
+                    Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+                },
+                Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+            },
+            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+        }
     }
+
     fn set_type(&self, value: String) -> Result<(), dbus::MethodErr> {
         match self.locked() {
             Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
@@ -145,7 +230,19 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                     Ok(())
                 },
             ) {
-                Ok(_) => Ok(()),
+                Ok(_) => {
+                    let item_path_clone = self.path().clone();
+                    tokio::spawn(async move {
+                        debug!("Sending ItemChanged signal");
+                        MESSAGE_SENDER.lock().unwrap().send_message(
+                            OrgFreedesktopSecretCollectionItemChanged {
+                                item: item_path_clone.clone(),
+                            }
+                            .to_emit_message(&item_path_clone),
+                        );
+                    });
+                    Ok(())
+                }
                 Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
             },
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),

@@ -385,4 +385,27 @@ impl Item {
             )),
         }
     }
+    pub fn set_secret(
+        &mut self,
+        session: String,
+        parameters: Vec<u8>,
+        value: Vec<u8>,
+        content_type: String,
+    ) -> Result<(), std::io::Error> {
+        debug!("set_secret called on '{}'", self.label);
+        // TODO here we should check if the session is authorized to access this item and use to
+        // encrypt the secret
+        match &mut self.data {
+            Some(data) => {
+                data.parameters = parameters;
+                data.data = value;
+                data.content_type = content_type;
+                Ok(())
+            }
+            None => Err(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Item is locked"),
+            )),
+        }
+    }
 }

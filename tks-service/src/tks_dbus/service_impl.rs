@@ -213,10 +213,10 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     )));
                 }
             },
-            _ => {
+            x => {
                 return Err(dbus::MethodErr::failed(&format!(
-                    "Error reading alias: {}",
-                    "Not implemented"
+                    "Alias not recognized: '{}'",
+                    x
                 )));
             }
         }
@@ -227,7 +227,6 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         collection: dbus::Path<'static>,
     ) -> Result<(), dbus::MethodErr> {
         trace!("Hello from set_alias");
-        // Ok(())
         return Err(dbus::MethodErr::failed(&format!(
             "Error setting alias: {}",
             "Not implemented"
