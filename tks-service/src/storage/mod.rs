@@ -297,6 +297,8 @@ impl Collection {
                 format!("Collection is locked"),
             ));
         }
+        let secret_session = secret.0.to_string();
+
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()

@@ -1,20 +1,20 @@
-use crate::storage::Item;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
+use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::MESSAGE_SENDER;
 use dbus::message::SignalArgs;
 use log;
-use log::{debug, error, info, trace};
+use log::{debug, error, trace};
 use std::collections::HashMap;
 extern crate pretty_env_logger;
 use crate::convert_prop_map;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::{CollectionHandle, CollectionImpl};
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
-use crate::tks_dbus::item_impl::ItemImpl;
-use crate::tks_dbus::session_impl::create_session;
+use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
+use crate::tks_dbus::session_impl::SessionHandle;
 use crate::tks_dbus::CROSSROADS;
 
 use dbus::arg;
@@ -57,21 +57,28 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         dbus::MethodErr,
     > {
         debug!("open_session {}", algorithm);
-        match create_session(algorithm, arg::cast::<Vec<u8>>(&input.0)) {
-            Ok((path, vector)) => {
-                let path = dbus::Path::from(path);
+        let mut sm = SESSION_MANAGER.lock().unwrap();
+        let ns = sm.new_session(algorithm, arg::cast::<Vec<u8>>(&input.0));
+        match ns {
+            Ok((sess_id, vector)) => {
                 let output = match vector {
-                    Some(e) => arg::Variant(Box::new(e) as Box<dyn arg::RefArg>),
-                    None => arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg>),
+                    Some(e) => arg::Variant(Box::new(e.clone()) as Box<dyn arg::RefArg + 'static>),
+                    None => arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg + 'static>),
+                };
+                let path = {
+                    let dh = sm.sessions.get(sess_id).unwrap().get_dbus_handle();
+                    let path = dh.path();
+                    register_object!(register_org_freedesktop_secret_session::<SessionHandle>, dh);
+                    path
                 };
                 Ok((output, path))
             }
             Err(e) => {
                 error!("Error creating session: {}", e);
-                return Err(dbus::MethodErr::failed(&format!(
+                Err(dbus::MethodErr::failed(&format!(
                     "Error creating session: {}",
                     e
-                )));
+                )))
             }
         }
     }

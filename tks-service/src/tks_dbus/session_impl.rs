@@ -11,18 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use vec_map::VecMap;
 
-pub fn create_session(
-    algorithm: String,
-    input: Option<&Vec<u8>>,
-) -> Result<(String, Option<Vec<u8>>), Box<dyn error::Error>> {
-    trace!("Creating new session with algorithm {}", algorithm);
-    SESSION_MANAGER
-        .lock()
-        .unwrap()
-        .new_session(algorithm, input)
-}
-
-struct Session {
+pub struct Session {
     pub id: usize,
     algorithm: String,
 }
@@ -62,28 +51,29 @@ impl Session {
 
 pub struct SessionManager {
     next_session_id: usize,
-    sessions: Arc<Mutex<VecMap<Session>>>,
+    pub sessions: VecMap<Session>,
 }
 
 lazy_static! {
-    pub static ref SESSION_MANAGER: Mutex<SessionManager> = Mutex::new(SessionManager::new());
+    pub static ref SESSION_MANAGER: Arc<Mutex<SessionManager>> =
+        Arc::new(Mutex::new(SessionManager::new()));
 }
 
 impl SessionManager {
     pub fn new() -> SessionManager {
         SessionManager {
             next_session_id: 0,
-            sessions: Arc::new(Mutex::new(VecMap::new())),
+            sessions: VecMap::new(),
         }
     }
 
-    fn new_session<'a>(
-        &'a mut self,
+    pub fn new_session(
+        &mut self,
         algorithm: String,
         input: Option<&Vec<u8>>,
-    ) -> Result<(String, Option<Vec<u8>>), Box<dyn error::Error>> {
+    ) -> Result<(usize, Option<Vec<u8>>), Box<dyn error::Error>> {
         debug!("Creating new session with algorithm {}", algorithm);
-        match algorithm.as_str() {
+        let sess_id = match algorithm.as_str() {
             "plain" => {
                 match input {
                     Some(_) => {
@@ -98,14 +88,9 @@ impl SessionManager {
                     id: session_num,
                     algorithm: algorithm.clone(),
                 };
-                let mut ss = self.sessions.lock().unwrap();
-                ss.insert(session_num, session);
+                self.sessions.insert(session_num, session);
                 trace!("Created session {}", session_num);
-                let session = ss.get(session_num).unwrap();
-                let sf = session.get_dbus_handle();
-                let path = sf.path();
-                register_object!(register_org_freedesktop_secret_session::<SessionHandle>, sf);
-                Ok((path.to_string(), None))
+                session_num
             }
 
             "dh-ietf1024-sha256-aes128-cbc-pkcs7" => {
@@ -117,16 +102,17 @@ impl SessionManager {
                 // let output = String::from("output");
                 // Ok((sessions.len() - 1, Some(output)))
                 error!("Algorithm {} not implemented", algorithm);
-                Err("Not implemented algorithm".into())
+                return Err("Not implemented algorithm".into());
             }
             _ => {
                 error!("Unsupported algorithm: {}", algorithm);
-                Err("Unsupported algorithm".into())
+                return Err("Unsupported algorithm".into());
             }
-        }
+        };
+        Ok((sess_id, None))
     }
     fn close_session(&mut self, id: usize) {
         trace!("Closing session {}", id);
-        self.sessions.lock().unwrap().remove(id);
+        self.sessions.remove(id);
     }
 }
