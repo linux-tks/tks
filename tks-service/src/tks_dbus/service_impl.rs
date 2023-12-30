@@ -1,3 +1,4 @@
+use crate::storage::Item;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
@@ -12,6 +13,7 @@ use crate::convert_prop_map;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::{CollectionHandle, CollectionImpl};
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
+use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::session_impl::create_session;
 use crate::tks_dbus::CROSSROADS;
 
@@ -149,23 +151,52 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         &mut self,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr> {
-        trace!("Hello from search_items");
-        // Ok((vec![], vec![]))
-        return Err(dbus::MethodErr::failed(&format!(
-            "Error searching items: {}",
-            "Not implemented"
-        )));
+        let mut unlocked = Vec::new();
+        let mut locked = Vec::new();
+
+        macro_rules! collect_paths {
+            ($locked:ident, $vec:ident) => {
+                STORAGE
+                    .lock()
+                    .unwrap()
+                    .collections
+                    .iter()
+                    .filter(|c| c.locked == $locked)
+                    .filter(|c| c.items.is_some())
+                    .fold(Vec::<dbus::Path>::new(), |acc, c| {
+                        // the borrow checked won't let us use acc here, so we use $vec instead
+                        $vec.extend(
+                            c.items
+                                .as_ref()
+                                .unwrap()
+                                .iter()
+                                .filter(|i| i.attributes == attributes)
+                                .map(|i| {
+                                    dbus::Path::from(format!(
+                                        "/org/freedesktop/secrets/collection/{}/{}",
+                                        c.name, i.label
+                                    ))
+                                }),
+                        );
+                        acc
+                    })
+            };
+        }
+        collect_paths!(true, locked);
+        collect_paths!(false, unlocked);
+        Ok((unlocked, locked))
     }
     fn unlock(
         &mut self,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
-        trace!("Hello from unlock");
-        // Ok((vec![], dbus::Path::from("/")))
-        return Err(dbus::MethodErr::failed(&format!(
-            "Error unlocking items: {}",
-            "Not implemented"
-        )));
+        debug!("unlock {:?}", objects);
+        let collection_names = objects
+            .iter()
+            .map(|p| p.to_string())
+            .map(|p| p.split('/').map(|s| s.to_string()).collect::<Vec<String>>()[5].clone())
+            .collect::<Vec<String>>();
+        Ok((objects, dbus::Path::from("/")))
     }
     fn lock(
         &mut self,

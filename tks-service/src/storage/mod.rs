@@ -276,7 +276,7 @@ impl Collection {
             path: path.to_os_string(),
             items: None,
             aliases: None,
-            locked: false,
+            locked: true,
             created: ts,
             modified: ts,
         };
@@ -291,7 +291,12 @@ impl Collection {
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(), std::io::Error> {
-        assert!(self.locked == false);
+        if self.locked {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Collection is locked"),
+            ));
+        }
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -336,7 +341,12 @@ impl Collection {
     }
 
     pub fn delete_item(&mut self, label: &str) -> Result<(), std::io::Error> {
-        assert!(self.locked == false);
+        if self.locked {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                format!("Collection is locked"),
+            ));
+        }
         match self.items.as_mut() {
             Some(items) => {
                 let index = items.iter().position(|i| i.label == label);
