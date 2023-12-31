@@ -1,3 +1,4 @@
+use crate::tks_dbus::session_impl::Session;
 use lazy_static::lazy_static;
 use log::{debug, error};
 use serde::{Deserialize, Serialize};
@@ -11,14 +12,21 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
+use uuid::Uuid;
 
 use crate::settings::SETTINGS;
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
+    uuid: Uuid,
     parameters: Vec<u8>,
     data: Vec<u8>,
     pub content_type: String,
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+struct CollectionSecrets {
+    items: Vec<ItemData>,
 }
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -26,8 +34,9 @@ pub struct Item {
     pub label: String,
     pub created: u64,
     pub modified: u64,
+    pub data_uuid: Option<Uuid>, // when Item is locked, this is None
     #[serde(skip)]
-    pub data: Option<ItemData>, // when Item is locked, this is None
+    pub data: Option<ItemData>,
 
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub attributes: HashMap<String, String>,
@@ -246,6 +255,14 @@ impl Storage {
             .into();
         collection.modified = ts;
         serde_json::to_writer_pretty(&mut file, collection)?;
+        if !collection.locked {
+            let mut items_path = PathBuf::new();
+            items_path.push(collection.path.clone());
+            items_path.push("items.json");
+            let mut file = File::create(items_path)?;
+            let collection_secrets = collection.get_secrets();
+            serde_json::to_writer_pretty(&mut file, &collection_secrets)?;
+        }
         Ok(())
     }
 
@@ -288,7 +305,7 @@ impl Collection {
         &mut self,
         label: &str,
         properties: HashMap<String, String>,
-        secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
+        secret: (&Session, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(), std::io::Error> {
         if self.locked {
@@ -297,22 +314,33 @@ impl Collection {
                 format!("Collection is locked"),
             ));
         }
-        let secret_session = secret.0.to_string();
+        let secret_session = secret.0;
 
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_secs()
             .into();
+        let uuid = Uuid::new_v4();
         let item = Item {
             label: label.to_string(),
             created: ts,
             modified: ts,
             data: Some(ItemData {
+                uuid,
                 parameters: secret.1,
-                data: secret.2,
+                data: match secret_session.decrypt(&secret.2) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!("Error decrypting secret: {}", e),
+                        ))
+                    }
+                },
                 content_type: secret.3,
             }),
+            data_uuid: Some(uuid),
             attributes: properties,
         };
         match self.items.as_mut() {
@@ -374,21 +402,43 @@ impl Collection {
         Storage::save_collection(self)?;
         Ok(())
     }
+
+    fn get_secrets(&self) -> CollectionSecrets {
+        let mut secrets = CollectionSecrets::new();
+        match &self.items {
+            Some(items) => {
+                for item in items {
+                    match &item.data {
+                        Some(data) => secrets.items.push((*data).clone()),
+                        None => {}
+                    }
+                }
+            }
+            None => {}
+        }
+        secrets
+    }
 }
 
 impl Item {
     pub fn get_secret(
         &self,
-        session: &str,
+        session: &Session,
     ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
         debug!("get_secret called on '{}'", self.label);
-        // TODO here we should check if the session is authorized to access this item and use to
-        // decrypt the secret
         match &self.data {
             Some(data) => Ok((
-                session.to_string(),
+                "".to_string(),
                 data.parameters.clone(),
-                data.data.clone(),
+                match session.encrypt(&data.data) {
+                    Ok(data) => data,
+                    Err(e) => {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::PermissionDenied,
+                            format!("Error encrypting secret: {}", e),
+                        ))
+                    }
+                },
                 data.content_type.clone(),
             )),
             None => Err(std::io::Error::new(
@@ -399,25 +449,32 @@ impl Item {
     }
     pub fn set_secret(
         &mut self,
-        session: String,
+        session: &Session,
         parameters: Vec<u8>,
-        value: Vec<u8>,
+        value: &Vec<u8>,
         content_type: String,
     ) -> Result<(), std::io::Error> {
         debug!("set_secret called on '{}'", self.label);
-        // TODO here we should check if the session is authorized to access this item and use to
-        // encrypt the secret
-        match &mut self.data {
-            Some(data) => {
-                data.parameters = parameters;
-                data.data = value;
-                data.content_type = content_type;
-                Ok(())
-            }
-            None => Err(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Item is locked"),
-            )),
-        }
+        self.data = Some(ItemData {
+            uuid: self.data_uuid.unwrap_or_else(|| Uuid::new_v4()),
+            parameters,
+            data: match session.decrypt(value) {
+                Ok(data) => data,
+                Err(e) => {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::PermissionDenied,
+                        format!("Error decrypting secret: {}", e),
+                    ))
+                }
+            },
+            content_type,
+        });
+        Ok(())
+    }
+}
+
+impl CollectionSecrets {
+    pub fn new() -> CollectionSecrets {
+        CollectionSecrets { items: Vec::new() }
     }
 }

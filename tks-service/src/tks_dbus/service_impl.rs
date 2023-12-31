@@ -58,8 +58,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     > {
         debug!("open_session {}", algorithm);
         let mut sm = SESSION_MANAGER.lock().unwrap();
-        let ns = sm.new_session(algorithm, arg::cast::<Vec<u8>>(&input.0));
-        match ns {
+        match sm.new_session(algorithm, arg::cast(&input.0)) {
             Ok((sess_id, vector)) => {
                 let output = match vector {
                     Some(e) => arg::Variant(Box::new(e.clone()) as Box<dyn arg::RefArg + 'static>),
@@ -227,7 +226,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         >,
         dbus::MethodErr,
     > {
-        trace!("Hello from get_secrets");
+        debug!("get_secrets {:?}", items);
         // Ok(::std::collections::HashMap::new())
         return Err(dbus::MethodErr::failed(&format!(
             "Error getting secrets: {}",

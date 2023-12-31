@@ -6,13 +6,13 @@ use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
 use crate::tks_dbus::fdo::item::register_org_freedesktop_secret_item;
 use crate::tks_dbus::item_impl::ItemHandle;
 use crate::tks_dbus::item_impl::ItemImpl;
+use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use dbus::arg;
 use dbus::message::SignalArgs;
 use log::{debug, error};
-use std::collections::HashMap;
 
 pub struct CollectionHandle {
     alias: String,
@@ -113,10 +113,35 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                 )));
             }
         };
+        let session_id = match secret.0.split('/').last().unwrap().parse::<usize>() {
+            Ok(id) => id,
+            Err(_) => {
+                error!("Invalid session ID");
+                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
+            }
+        };
+        match self.locked() {
+            Ok(true) => return Err(dbus::MethodErr::failed(&"Collection is locked")),
+            Err(_) => return Err(dbus::MethodErr::failed(&"Not found")),
+            Ok(false) => {}
+        }
+        let sm = SESSION_MANAGER.lock().unwrap();
+        let session = match sm.sessions.get(session_id) {
+            Some(s) => s,
+            None => {
+                error!("Session {} not found", session_id);
+                return Err(dbus::MethodErr::failed(&"Session not found"));
+            }
+        };
         let mut storage = STORAGE.lock().unwrap();
         let rc = storage
             .with_collection(&self.alias, |collection| {
-                collection.create_item(&item_label, item_attributes, secret, replace)
+                collection.create_item(
+                    &item_label,
+                    item_attributes,
+                    (session, secret.1, secret.2, secret.3),
+                    replace,
+                )
             })
             .and_then(|item| item)
             .map_err(|e| {

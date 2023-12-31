@@ -3,9 +3,9 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemChanged;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemDeleted;
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
+use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::MESSAGE_SENDER;
-use dbus::arg;
 use dbus::message::SignalArgs;
 use log::debug;
 use log::error;
@@ -75,13 +75,32 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         &mut self,
         session: dbus::Path<'static>,
     ) -> Result<(dbus::Path<'static>, Vec<u8>, Vec<u8>, String), dbus::MethodErr> {
-        let session = session.to_string();
+        let session_id = match session.split('/').last().unwrap().parse::<usize>() {
+            Ok(id) => id,
+            Err(_) => {
+                error!("Invalid session ID");
+                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
+            }
+        };
+        match self.locked() {
+            Ok(true) => return Err(dbus::MethodErr::failed(&"Item is locked")),
+            Err(_) => return Err(dbus::MethodErr::failed(&"Item not found")),
+            Ok(false) => {}
+        }
+        let sm = SESSION_MANAGER.lock().unwrap();
+        let s = match sm.sessions.get(session_id) {
+            Some(s) => s,
+            None => {
+                error!("Session {} not found", session_id);
+                return Err(dbus::MethodErr::failed(&"Session not found"));
+            }
+        };
         match self.locked() {
             Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
             Ok(false) => match STORAGE.lock().unwrap().with_item(
                 self.collection_alias.as_str(),
                 self.label.as_str(),
-                |item| match item.get_secret(&session) {
+                |item| match item.get_secret(s) {
                     Ok((session, parameters, value, content_type)) => {
                         Ok((dbus::Path::from(session), parameters, value, content_type))
                     }
@@ -98,10 +117,30 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         &mut self,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
     ) -> Result<(), dbus::MethodErr> {
+        let session_id = match secret.0.split('/').last().unwrap().parse::<usize>() {
+            Ok(id) => id,
+            Err(_) => {
+                error!("Invalid session ID");
+                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
+            }
+        };
+        match self.locked() {
+            Ok(true) => return Err(dbus::MethodErr::failed(&"Item is locked")),
+            Err(_) => return Err(dbus::MethodErr::failed(&"Item not found")),
+            Ok(false) => {}
+        }
+        let sm = SESSION_MANAGER.lock().unwrap();
+        let s = match sm.sessions.get(session_id) {
+            Some(s) => s,
+            None => {
+                error!("Session {} not found", session_id);
+                return Err(dbus::MethodErr::failed(&"Session not found"));
+            }
+        };
         match STORAGE.lock().unwrap().modify_item(
             self.collection_alias.as_str(),
             self.label.as_str(),
-            |item| item.set_secret(secret.0.to_string(), secret.1, secret.2, secret.3),
+            |item| item.set_secret(&s, secret.1, &secret.2, secret.3),
         ) {
             Ok(_) => {
                 let item_path_clone = self.path().clone();

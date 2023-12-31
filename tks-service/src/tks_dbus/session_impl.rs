@@ -1,11 +1,8 @@
-use crate::register_object;
-use crate::tks_dbus::fdo::session::{
-    register_org_freedesktop_secret_session, OrgFreedesktopSecretSession,
-};
+use crate::tks_dbus::fdo::session::OrgFreedesktopSecretSession;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::CROSSROADS;
 use lazy_static::lazy_static;
-use log::{debug, error, info, trace};
+use log::{debug, error, trace};
 use std::error;
 use std::sync::Arc;
 use std::sync::Mutex;
@@ -30,6 +27,10 @@ pub struct EncryptedOutput {
 impl OrgFreedesktopSecretSession for SessionHandle {
     fn close(&mut self) -> Result<(), dbus::MethodErr> {
         SESSION_MANAGER.lock().unwrap().close_session(self.id);
+        CROSSROADS
+            .lock()
+            .unwrap()
+            .remove::<SessionHandle>(&self.path());
         Ok(())
     }
 }
@@ -112,7 +113,36 @@ impl SessionManager {
         Ok((sess_id, None))
     }
     fn close_session(&mut self, id: usize) {
-        trace!("Closing session {}", id);
+        debug!("Closing session {}", id);
         self.sessions.remove(id);
+    }
+}
+
+impl DBusHandle for SessionManager {
+    fn path(&self) -> dbus::Path<'static> {
+        "/org/freedesktop/secrets/session".into()
+    }
+}
+
+impl Session {
+    pub fn decrypt(&self, input: &Vec<u8>) -> Result<Vec<u8>, Box<dyn error::Error>> {
+        debug!("Decrypting secret for session {}", self.id);
+        match self.algorithm.as_str() {
+            "plain" => Ok(input.clone()),
+            _ => {
+                error!("Unsupported algorithm: {}", self.algorithm);
+                Err("Unsupported algorithm".into())
+            }
+        }
+    }
+    pub fn encrypt(&self, input: &Vec<u8>) -> Result<Vec<u8>, Box<dyn error::Error>> {
+        debug!("Encrypting secret for session {}", self.id);
+        match self.algorithm.as_str() {
+            "plain" => Ok(input.clone()),
+            _ => {
+                error!("Unsupported algorithm: {}", self.algorithm);
+                Err("Unsupported algorithm".into())
+            }
+        }
     }
 }
