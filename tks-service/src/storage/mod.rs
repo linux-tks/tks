@@ -276,6 +276,7 @@ impl Storage {
         file.read_to_string(&mut data)?;
         let mut collection: Collection = serde_json::from_str(&data)?;
         collection.path = path.as_os_str().to_os_string();
+        collection.locked = true;
         Ok(collection)
     }
 }
@@ -417,6 +418,43 @@ impl Collection {
             None => {}
         }
         secrets
+    }
+
+    pub fn unlock(&mut self) -> Result<(), std::io::Error> {
+        if !self.locked {
+            return Ok(());
+        }
+        let mut items_path = PathBuf::new();
+        items_path.push(self.path.clone());
+        items_path.push("items.json");
+        let mut file = File::open(items_path)?;
+        let mut data = String::new();
+        file.read_to_string(&mut data)?;
+        let collection_secrets: CollectionSecrets = serde_json::from_str(&data)?;
+        match &mut self.items {
+            Some(items) => {
+                for item in items {
+                    match &mut item.data_uuid {
+                        Some(uuid) => {
+                            let secret = collection_secrets
+                                .items
+                                .iter()
+                                .find(|s| s.uuid == *uuid)
+                                .ok_or(std::io::Error::new(
+                                    // TODO: maybe we should put the service in a fail state if we can't unlock a collection
+                                    std::io::ErrorKind::NotFound,
+                                    format!("Secrets file does not contain secret for item "),
+                                ))?;
+                            item.data = Some(secret.clone());
+                        }
+                        None => {}
+                    }
+                }
+            }
+            None => {}
+        }
+        self.locked = false;
+        Ok(())
     }
 }
 

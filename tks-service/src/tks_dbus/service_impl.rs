@@ -202,7 +202,29 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .map(|p| p.to_string())
             .map(|p| p.split('/').map(|s| s.to_string()).collect::<Vec<String>>()[5].clone())
             .collect::<Vec<String>>();
-        Ok((objects, dbus::Path::from("/")))
+        let mut unlocked = Vec::new();
+        STORAGE
+            .lock()
+            .unwrap()
+            .collections
+            .iter_mut()
+            .filter(|c| collection_names.contains(&c.name))
+            .for_each(|c| {
+                match c.unlock() {
+                    Ok(_) => {
+                        objects.iter().for_each(|p| {
+                            if p.to_string().contains(&c.name) {
+                                unlocked.push(p.clone());
+                            }
+                        });
+                    }
+                    Err(e) => {
+                        // TODO this may instead require a prompt
+                        assert!(false, "Error unlocking collection: {}", e);
+                    }
+                }
+            });
+        Ok((unlocked, dbus::Path::from("/")))
     }
     fn lock(
         &mut self,
