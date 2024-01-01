@@ -169,8 +169,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     .iter()
                     .filter(|c| c.locked == $locked)
                     .filter(|c| c.items.is_some())
-                    .fold(Vec::<dbus::Path>::new(), |acc, c| {
-                        // the borrow checked won't let us use acc here, so we use $vec instead
+                    .for_each(|c| {
                         $vec.extend(
                             c.items
                                 .as_ref()
@@ -184,7 +183,6 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                                     ))
                                 }),
                         );
-                        acc
                     })
             };
         }
