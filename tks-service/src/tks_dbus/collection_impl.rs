@@ -1,5 +1,6 @@
 use crate::convert_prop_map;
 use crate::register_object;
+use crate::storage::Item;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
@@ -46,6 +47,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         debug!("delete called on '{}'", self.alias);
         match self.alias.as_str() {
             "default" => return Err(dbus::MethodErr::failed(&"Cannot delete default collection")),
+            // TODO: implement this when prompts are implemented
             _ => Err(dbus::MethodErr::failed(&"Not implemented")),
         }
     }
@@ -53,7 +55,26 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         &mut self,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        let empty: Vec<Item> = Vec::new();
+        match STORAGE
+            .lock()
+            .unwrap()
+            .with_collection(&self.alias, |collection| {
+                collection
+                    .items
+                    .as_ref()
+                    .unwrap_or_else(|| &empty)
+                    .iter()
+                    .filter(|item| item.attributes == attributes)
+                    .map(|item| format!("{}/{}", self.path(), item.label))
+                    .collect::<Vec<String>>()
+            }) {
+            Ok(items) => Ok(items.iter().map(|i| i.clone().into()).collect()),
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error searching items for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
     // d-feet example call:
     // {"org.freedesktop.Secret.Item.Label":GLib.Variant('s',"test"), "org.freedesktop.Secret.Item.Attributes":GLib.Variant("a{sv}",{"prop1":GLib.Variant('s',"val1"),"prop2":GLib.Variant('s',"val2")})}, ("/",[],[],""),0
@@ -203,7 +224,19 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         Ok(self.alias.clone())
     }
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {
-        Err(dbus::MethodErr::failed(&"Not implemented"))
+        match STORAGE
+            .lock()
+            .unwrap()
+            .modify_collection(&self.alias, |collection| {
+                collection.name = value;
+                Ok(())
+            }) {
+            Ok(_) => Ok(()),
+            Err(e) => Err(dbus::MethodErr::failed(&format!(
+                "Error setting label for collection {}: {}",
+                self.alias, e
+            ))),
+        }
     }
     fn locked(&self) -> Result<bool, dbus::MethodErr> {
         match STORAGE

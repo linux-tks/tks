@@ -126,6 +126,35 @@ impl Storage {
         Ok(f(&mut collection))
     }
 
+    pub fn modify_collection<F, T>(&mut self, alias: &str, f: F) -> Result<T, std::io::Error>
+    where
+        F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
+    {
+        let mut collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.name == alias)
+            .ok_or(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                format!("Collection '{}' not found", alias),
+            ))?;
+        match f(&mut collection) {
+            Ok(t) => {
+                collection.modified = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs()
+                    .into();
+                // TODO the collection name may have changed; in this case, we might need to also
+                // update the collection's path on disk; but for the moment, it should still reload
+                // fine as the correct collection name gets serialized on disk
+                Storage::save_collection(&mut collection)?;
+                Ok(t)
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     /// This performs a read-only operation on a collection item
     /// for RW operations, use modify_item
     pub fn with_item<F, T>(
@@ -455,6 +484,18 @@ impl Collection {
         }
         self.locked = false;
         Ok(())
+    }
+    pub fn lock(&mut self) -> Result<bool, std::io::Error> {
+        self.locked = true;
+        match &mut self.items {
+            Some(items) => {
+                for item in items {
+                    item.data = None;
+                }
+                Ok(true)
+            }
+            None => Ok(true),
+        }
     }
 }
 

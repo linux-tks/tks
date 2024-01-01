@@ -228,12 +228,29 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         &mut self,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
-        trace!("Hello from lock");
-        // Ok((vec![], dbus::Path::from("/")))
-        return Err(dbus::MethodErr::failed(&format!(
-            "Error locking items: {}",
-            "Not implemented"
-        )));
+        trace!("lock {:?}", objects);
+        let collection_names = objects
+            .iter()
+            .map(|p| p.to_string())
+            .map(|p| p.split('/').map(|s| s.to_string()).collect::<Vec<String>>()[5].clone())
+            .collect::<Vec<String>>();
+        let mut locked: Vec<dbus::Path> = Vec::new();
+        STORAGE
+            .lock()
+            .unwrap()
+            .collections
+            .iter_mut()
+            .filter(|c| collection_names.contains(&c.name))
+            .for_each(|c| {
+                if c.lock().unwrap_or(false) {
+                    let path = dbus::Path::from(format!(
+                        "/org/freedesktop/secrets/collection/{}",
+                        c.name.clone()
+                    ));
+                    locked.push(path);
+                }
+            });
+        Ok((locked, dbus::Path::from("/")))
     }
     fn get_secrets(
         &mut self,
