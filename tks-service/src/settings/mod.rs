@@ -3,7 +3,6 @@ use lazy_static::lazy_static;
 use log::debug;
 use serde_derive::Deserialize;
 use std::env;
-use std::ffi::OsString;
 use std::sync::Arc;
 use std::sync::Mutex;
 

@@ -100,14 +100,12 @@ impl OrgFreedesktopSecretItem for ItemHandle {
             Ok(false) => match STORAGE.lock().unwrap().with_item(
                 self.collection_alias.as_str(),
                 self.label.as_str(),
-                |item| match item.get_secret(s) {
-                    Ok((session, parameters, value, content_type)) => {
-                        Ok((dbus::Path::from(session), parameters, value, content_type))
-                    }
-                    Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+                |item| {
+                    let s = item.get_secret(s)?;
+                    Ok((dbus::Path::from(s.0), s.1, s.2, s.3.clone()))
                 },
             ) {
-                Ok(result) => result,
+                Ok(result) => Ok(result),
                 Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
             },
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
@@ -173,7 +171,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         match STORAGE.lock().unwrap().with_item(
             self.collection_alias.as_str(),
             self.label.as_str(),
-            |item| item.attributes.clone(),
+            |item| Ok(item.attributes.clone()),
         ) {
             Ok(attrs) => Ok(attrs),
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
@@ -245,13 +243,13 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                 self.label.as_str(),
                 |item| match item.data {
                     Some(ref data) => Ok(data.content_type.clone()),
-                    None => Err(dbus::MethodErr::failed(&"Item not found")),
+                    None => Err(std::io::Error::new(
+                        std::io::ErrorKind::NotFound,
+                        format!("Not found"),
+                    )),
                 },
             ) {
-                Ok(content_type) => match content_type {
-                    Ok(content_type) => Ok(content_type),
-                    Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
-                },
+                Ok(content_type) => Ok(content_type),
                 Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
             },
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
@@ -291,7 +289,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         match STORAGE.lock().unwrap().with_item(
             self.collection_alias.as_str(),
             self.label.as_str(),
-            |item| item.created,
+            |item| Ok(item.created),
         ) {
             Ok(created) => Ok(created),
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
@@ -301,7 +299,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         match STORAGE.lock().unwrap().with_item(
             self.collection_alias.as_str(),
             self.label.as_str(),
-            |item| item.modified,
+            |item| Ok(item.modified),
         ) {
             Ok(modified) => Ok(modified),
             Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),

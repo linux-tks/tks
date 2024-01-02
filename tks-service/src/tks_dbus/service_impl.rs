@@ -26,7 +26,7 @@ impl ServiceImpl {
     pub fn new() -> ServiceImpl {
         let coll = CollectionImpl::new("default");
         tokio::spawn(async move {
-            debug!("Registering default collection");
+            trace!("Registering default collection");
             register_object!(
                 register_org_freedesktop_secret_collection::<CollectionHandle>,
                 coll.get_dbus_handle()
@@ -56,7 +56,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         ),
         dbus::MethodErr,
     > {
-        debug!("open_session {}", algorithm);
+        trace!("open_session {}", algorithm);
         let mut sm = SESSION_MANAGER.lock().unwrap();
         match sm.new_session(algorithm, arg::cast(&input.0)) {
             Ok((sess_id, vector)) => {
@@ -92,7 +92,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         properties: arg::PropMap,
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
-        debug!("create_collection alias={}", alias);
+        trace!("create_collection alias={}", alias);
 
         match alias.as_str() {
             "default" => {
@@ -105,7 +105,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             }
             _ => {}
         }
-        let (string_props, errors) = convert_prop_map!(properties);
+        let (string_props, _) = convert_prop_map!(properties);
 
         // now check if user specified the org.freedesktop.Secret.Collection.Label property
         let label = match string_props.get("org.freedesktop.Secret.Collection.Label") {
@@ -194,7 +194,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         &mut self,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
-        debug!("unlock {:?}", objects);
+        trace!("unlock {:?}", objects);
         let collection_names = objects
             .iter()
             .map(|p| p.to_string())
@@ -263,16 +263,52 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         >,
         dbus::MethodErr,
     > {
-        debug!("get_secrets {:?}", items);
-        // Ok(::std::collections::HashMap::new())
-        return Err(dbus::MethodErr::failed(&format!(
-            "Error getting secrets: {}",
-            "Not implemented"
-        )));
+        trace!("get_secrets {:?}", items);
+        let session_id = match session.split('/').last().unwrap().parse::<usize>() {
+            Ok(id) => id,
+            Err(_) => {
+                error!("Invalid session ID");
+                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
+            }
+        };
+        let sm = SESSION_MANAGER.lock().unwrap();
+        let session = match sm.sessions.get(session_id) {
+            Some(s) => s,
+            None => {
+                error!("Session {} not found", session_id);
+                return Err(dbus::MethodErr::failed(&"Session not found"));
+            }
+        };
+        type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
+        let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
+        items
+            .iter()
+            .map(|p| {
+                (
+                    p,
+                    p.to_string()
+                        .split('/')
+                        .map(|s| s.to_string())
+                        .collect::<Vec<String>>(),
+                )
+            })
+            .filter(|p| p.1.len() == 7)
+            .for_each(|p| {
+                let coll = p.1.get(5).unwrap().clone();
+                let item = p.1.get(6).unwrap().clone();
+                let _ = STORAGE
+                    .lock()
+                    .unwrap()
+                    .with_item(&coll, &item, |i| i.get_secret(session))
+                    .map(|s| {
+                        secrets_map.insert(p.0.clone(), (dbus::Path::from(s.0), s.1, s.2, s.3));
+                    });
+            });
+        Ok(secrets_map)
     }
 
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
-        debug!("read_alias {}", name);
+        trace!("read_alias {}", name);
         match name.as_str() {
             "default" => match STORAGE.lock().unwrap().read_alias(&name) {
                 Ok(name) => Ok(dbus::Path::from(format!(
@@ -297,8 +333,8 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn set_alias(
         &mut self,
-        name: String,
-        collection: dbus::Path<'static>,
+        _name: String,
+        _collection: dbus::Path<'static>,
     ) -> Result<(), dbus::MethodErr> {
         trace!("Hello from set_alias");
         return Err(dbus::MethodErr::failed(&format!(
@@ -307,7 +343,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         )));
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
-        debug!("collections");
+        trace!("collections");
         let collections = &STORAGE.lock().unwrap().collections;
         let c = collections
             .into_iter()

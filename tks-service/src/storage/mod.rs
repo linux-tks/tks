@@ -1,6 +1,6 @@
 use crate::tks_dbus::session_impl::Session;
 use lazy_static::lazy_static;
-use log::{debug, error};
+use log::{debug, error, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -90,7 +90,7 @@ impl Storage {
         match storage.read_alias("default") {
             Ok(name) => name,
             Err(_) => {
-                debug!("Creating default collection");
+                error!("Creating default collection");
                 let _ = storage.create_collection("default", "default", &HashMap::new());
                 "default".to_string()
             }
@@ -164,7 +164,7 @@ impl Storage {
         f: F,
     ) -> Result<T, std::io::Error>
     where
-        F: FnOnce(&Item) -> T,
+        F: FnOnce(&Item) -> Result<T, std::io::Error>,
     {
         let collection = self
             .collections
@@ -184,7 +184,7 @@ impl Storage {
                 std::io::ErrorKind::NotFound,
                 format!("Item '{}' not found", item_alias),
             ))?;
-        Ok(f(&item))
+        f(&item)
     }
 
     pub fn modify_item<F, T>(
@@ -255,7 +255,7 @@ impl Storage {
         }
         Self::save_collection(&mut coll)?;
         self.collections.push(coll);
-        debug!(
+        trace!(
             "Created collection '{}' at path '{}'",
             name,
             collection_path.display()
@@ -271,7 +271,7 @@ impl Storage {
         let mut metadata_path = PathBuf::new();
         metadata_path.push(collection.path.clone());
         metadata_path.push("metadata.json");
-        debug!(
+        trace!(
             "Saving collection '{}' to path '{}'",
             collection.name,
             metadata_path.display()
@@ -288,6 +288,7 @@ impl Storage {
             let mut items_path = PathBuf::new();
             items_path.push(collection.path.clone());
             items_path.push("items.json");
+            debug!("Collection items path: {}", items_path.display());
             let mut file = File::create(items_path)?;
             let collection_secrets = collection.get_secrets();
             serde_json::to_writer_pretty(&mut file, &collection_secrets)?;
@@ -504,7 +505,7 @@ impl Item {
         &self,
         session: &Session,
     ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
-        debug!("get_secret called on '{}'", self.label);
+        trace!("get_secret called on '{}'", self.label);
         match &self.data {
             Some(data) => Ok((
                 "".to_string(),
@@ -533,7 +534,7 @@ impl Item {
         value: &Vec<u8>,
         content_type: String,
     ) -> Result<(), std::io::Error> {
-        debug!("set_secret called on '{}'", self.label);
+        trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {
             uuid: self.data_uuid.unwrap_or_else(|| Uuid::new_v4()),
             parameters,

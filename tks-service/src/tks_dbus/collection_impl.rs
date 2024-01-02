@@ -1,4 +1,3 @@
-use crate::convert_prop_map;
 use crate::register_object;
 use crate::storage::Item;
 use crate::storage::STORAGE;
