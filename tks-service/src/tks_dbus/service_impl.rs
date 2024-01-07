@@ -157,6 +157,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         &mut self,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr> {
+        trace!("search_items {:?}", attributes);
         let mut unlocked = Vec::new();
         let mut locked = Vec::new();
 
@@ -188,6 +189,8 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         }
         collect_paths!(true, locked);
         collect_paths!(false, unlocked);
+        debug!("search_items unlocked: {:?}", unlocked);
+        debug!("search_items locked: {:?}", locked);
         Ok((unlocked, locked))
     }
     fn unlock(
@@ -222,7 +225,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     }
                 }
             });
-        Ok((unlocked, dbus::Path::from("/")))
+        let prompt = dbus::Path::from("/");
+        debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompt);
+        Ok((unlocked, prompt))
     }
     fn lock(
         &mut self,

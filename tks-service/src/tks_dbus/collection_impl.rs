@@ -4,19 +4,26 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
 use crate::tks_dbus::fdo::item::register_org_freedesktop_secret_item;
+use crate::tks_dbus::fdo::prompt::register_org_freedesktop_secret_prompt;
 use crate::tks_dbus::item_impl::ItemHandle;
 use crate::tks_dbus::item_impl::ItemImpl;
+use crate::tks_dbus::prompt_impl::PromptHandle;
+use crate::tks_dbus::prompt_impl::PromptImpl;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
+use arg::cast;
 use dbus::arg;
+use dbus::arg::{PropMap, RefArg};
 use dbus::message::SignalArgs;
-use log::{debug, error};
+use log::{debug, error, trace};
+use std::collections::HashMap;
 
 pub struct CollectionHandle {
     alias: String,
 }
+
 pub struct CollectionImpl {
     alias: String,
 }
@@ -33,11 +40,15 @@ impl CollectionImpl {
         }
     }
 }
+
 impl DBusHandle for CollectionHandle {
     fn path(&self) -> dbus::Path<'static> {
-        format!("/org/freedesktop/secrets/collection/{}", self.alias)
-            .to_string()
-            .into()
+        match self.alias.as_str() {
+            "default" => "/org/freedesktop/secrets/aliases/default".to_string(),
+            _ => format!("/org/freedesktop/secrets/collection/{}", self.alias),
+        }
+        .to_string()
+        .into()
     }
 }
 
@@ -83,8 +94,13 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
+        trace!(
+            "create_item properties: {:?}, secret: ({:?})",
+            properties,
+            secret
+        );
         let item_label = match properties.get("org.freedesktop.Secret.Item.Label") {
-            Some(s) => match arg::cast::<String>(&s.0) {
+            Some(s) => match cast::<String>(&s.0) {
                 Some(s) => s.clone(),
                 None => {
                     debug!("Error creating item: label is not a string");
@@ -102,29 +118,9 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                 )));
             }
         };
-        let mut errors = Vec::new();
-        let item_attributes = match properties.get("org.freedesktop.Secret.Item.Attributes") {
-            Some(d) => match arg::cast::<arg::PropMap>(&d.0) {
-                Some(d) => d
-                    .iter()
-                    .map(|(k, v)| match arg::cast::<String>(&v.0) {
-                        Some(s) => (k.clone(), s.clone()),
-                        None => {
-                            debug!("Error casting property {} to string", k);
-                            errors.push(format!("Property {} should be a string", k));
-                            (k.clone(), String::new())
-                        }
-                    })
-                    .collect(),
-                None => {
-                    debug!("Error creating item: no attributes specified");
-                    return Err(dbus::MethodErr::failed(&format!(
-                        "Error creating item: {}",
-                        "No attributes specified"
-                    )));
-                }
-            },
-
+        // let mut errors = Vec::new();
+        let item_attributes_v = match properties.get("org.freedesktop.Secret.Item.Attributes") {
+            Some(x) => x,
             None => {
                 debug!("Error creating item: no attributes specified");
                 return Err(dbus::MethodErr::failed(&format!(
@@ -133,6 +129,18 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                 )));
             }
         };
+        item_attributes_v
+            .0
+            .as_iter()
+            .unwrap()
+            .for_each(|x| debug!("x: {:?}", x));
+        let item_attributes = item_attributes_v
+            .0
+            .as_iter()
+            .unwrap()
+            .array_chunks()
+            .map(|a: [_; 2]| (a[0].as_str().unwrap().into(), a[1].as_str().unwrap().into()))
+            .collect::<HashMap<String, String>>();
         let session_id = match secret.0.split('/').last().unwrap().parse::<usize>() {
             Ok(id) => id,
             Err(_) => {
@@ -141,8 +149,24 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
             }
         };
         match self.locked() {
-            Ok(true) => return Err(dbus::MethodErr::failed(&"Collection is locked")),
-            Err(_) => return Err(dbus::MethodErr::failed(&"Not found")),
+            Ok(true) => {
+                debug!(
+                    "Collection '{}' is locked, now preparing prompt",
+                    self.alias
+                );
+                let prompt = PromptImpl::new();
+                let prompt_path = prompt.get_dbus_handle().path();
+                register_object!(
+                    register_org_freedesktop_secret_prompt::<PromptHandle>,
+                    prompt.get_dbus_handle()
+                );
+                let item_path = dbus::Path::from("/");
+                return Ok((item_path, prompt_path));
+            }
+            Err(_) => {
+                error!("Unexpected error occured");
+                return Err(dbus::MethodErr::failed(&"Not found"));
+            }
             Ok(false) => {}
         }
         let sm = SESSION_MANAGER.lock().unwrap();

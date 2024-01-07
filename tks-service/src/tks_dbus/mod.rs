@@ -2,6 +2,7 @@ pub mod fdo;
 
 pub mod collection_impl;
 pub mod item_impl;
+pub mod prompt_impl;
 pub mod service_impl;
 pub mod session_impl;
 
@@ -14,7 +15,7 @@ use dbus::*;
 use dbus_tokio::connection;
 use futures::future;
 use lazy_static::lazy_static;
-use log::debug;
+use log::{debug, trace};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -100,7 +101,7 @@ macro_rules! convert_prop_map {
 }
 
 pub async fn start_server() {
-    debug!("Connecting to the D-Bus session bus");
+    trace!("Connecting to the D-Bus session bus");
     let (resource, c) = connection::new_session_sync().unwrap_or_else(|_| {
         panic!(
             "Failed to connect to the D-Bus session bus. \
@@ -115,7 +116,7 @@ pub async fn start_server() {
     MESSAGE_SENDER.lock().unwrap().set_connection(c.clone());
 
     {
-        debug!("Registering org.freedesktop.Secret.Service");
+        trace!("Registering org.freedesktop.Secret.Service");
         let mut crossroads = CROSSROADS.lock().unwrap();
         let itf = register_org_freedesktop_secret_service(&mut crossroads);
         crossroads.insert("/org/freedesktop/secrets", &[itf], ServiceImpl::new());
@@ -133,7 +134,7 @@ pub async fn start_server() {
         panic!("Failed to acquire the service name");
     }
 
-    debug!("Start serving");
+    trace!("Start serving");
     c.start_receive(
         MatchRule::new_method_call(),
         Box::new(move |msg, conn| {
@@ -145,7 +146,7 @@ pub async fn start_server() {
                     .handle_message(msg, conn)
                     .unwrap();
             }
-            debug!("Handled message");
+            trace!("Handled message");
             true
         }),
     );

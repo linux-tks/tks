@@ -1,16 +1,26 @@
 use crate::tks_dbus::fdo::session::OrgFreedesktopSecretSession;
+use openssl::pkey::PKey;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::CROSSROADS;
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
+use openssl::derive::Deriver;
+use openssl::dh::Dh;
+use openssl::pkey::Id;
 use std::error;
 use std::sync::Arc;
 use std::sync::Mutex;
+use openssl::hash::MessageDigest;
+use openssl::md::Md;
+use openssl::pkcs5::pbkdf2_hmac;
+use openssl::pkey_ctx::PkeyCtx;
+use tss_esapi::structures::Digest;
 use vec_map::VecMap;
 
 pub struct Session {
     pub id: usize,
     algorithm: String,
+    aes_key_bytes: Option<Vec<u8>>,
 }
 
 #[derive(Debug)]
@@ -73,44 +83,18 @@ impl SessionManager {
         algorithm: String,
         input: Option<&Vec<u8>>,
     ) -> Result<(usize, Option<Vec<u8>>), Box<dyn error::Error>> {
-        debug!("Creating new session with algorithm {}", algorithm);
-        let sess_id = match algorithm.as_str() {
-            "plain" => {
-                match input {
-                    Some(_) => {
-                        error!("Algorithm {} does not take input", algorithm);
-                        return Err("Algorithm does not take input".into());
-                    }
-                    None => (),
-                }
-                let session_num = self.next_session_id;
-                self.next_session_id += 1;
-                let session = Session {
-                    id: session_num,
-                    algorithm: algorithm.clone(),
-                };
-                self.sessions.insert(session_num, session);
-                trace!("Created session {}", session_num);
-                session_num
-            }
-
-            "dh-ietf1024-sha256-aes128-cbc-pkcs7" => {
-                // let input = input.0;
-                // let input = input.as_iter().unwrap();
-                // let input = input.collect::<Vec<&dyn arg::RefArg>>();
-                // let input = input[0].as_str().unwrap();
-                // info!("input: {}", input);
-                // let output = String::from("output");
-                // Ok((sessions.len() - 1, Some(output)))
-                error!("Algorithm {} not implemented", algorithm);
-                return Err("Not implemented algorithm".into());
-            }
-            _ => {
-                error!("Unsupported algorithm: {}", algorithm);
-                return Err("Unsupported algorithm".into());
-            }
+        trace!("Creating new session with algorithm {}", algorithm);
+        let mut output = None;
+        let sess_id = {
+            let session_num = self.next_session_id;
+            self.next_session_id += 1;
+            let mut session = Session::new(session_num, algorithm.clone());
+            output = session.get_shared_secret(input)?;
+            self.sessions.insert(session_num, session);
+            debug!("Created session {}", session_num);
+            session_num
         };
-        Ok((sess_id, None))
+        Ok((sess_id, output))
     }
     fn close_session(&mut self, id: usize) {
         debug!("Closing session {}", id);
@@ -125,6 +109,57 @@ impl DBusHandle for SessionManager {
 }
 
 impl Session {
+    pub fn new(id: usize, algorithm: String) -> Session {
+        Session { id, algorithm, aes_key_bytes: None }
+    }
+    pub fn get_shared_secret(
+        &mut self,
+        input: Option<&Vec<u8>>,
+    ) -> Result<Option<Vec<u8>>, Box<dyn error::Error>> {
+        match self.algorithm.as_str() {
+            "plain" => {
+                match input {
+                    Some(_) => {
+                        error!("Algorithm {} does not take input", self.algorithm);
+                        return Err("Algorithm does not take input".into());
+                    }
+                    None => (),
+                }
+                Ok(None)
+            }
+
+            "dh-ietf1024-sha256-aes128-cbc-pkcs7" => {
+                match input {
+                    Some(input) => {
+                        let private_key = PKey::generate_x25519()?;
+                        let output = private_key.raw_public_key()?;
+
+                        let peer_key = PKey::public_key_from_raw_bytes(&input[0..output.len()], Id::X25519)?;
+                        let mut deriver_1 = Deriver::new(&private_key)?;
+                        deriver_1.set_peer(&peer_key)?;
+                        let derived_vec = deriver_1.derive_to_vec()?;
+
+                        let mut d2_ctx = PkeyCtx::new_id(Id::HKDF)?;
+                        d2_ctx.derive_init()?;
+                        d2_ctx.set_hkdf_salt(&[])?;
+                        d2_ctx.set_hkdf_md(Md::sha256())?;
+                        d2_ctx.add_hkdf_info(&[])?;
+                        d2_ctx.set_hkdf_key(derived_vec.as_slice())?;
+                        let mut aes_key_bytes: [u8; 16] = [0; 16];
+                        let _bytes = d2_ctx.derive(Some(&mut aes_key_bytes))?;
+                        self.aes_key_bytes = Some(aes_key_bytes.into());
+
+                        Ok(Some(output))
+                    }
+                    None => return Err("No input provided".into()),
+                }
+            }
+            _ => {
+                error!("Unsupported algorithm: '{}'", self.algorithm);
+                return Err("Unsupported algorithm".into());
+            }
+        }
+    }
     pub fn decrypt(&self, input: &Vec<u8>) -> Result<Vec<u8>, Box<dyn error::Error>> {
         debug!("Decrypting secret for session {}", self.id);
         match self.algorithm.as_str() {
