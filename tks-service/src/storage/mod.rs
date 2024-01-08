@@ -4,6 +4,7 @@ use log::{debug, error, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
+use std::fs;
 use std::fs::DirBuilder;
 use std::fs::File;
 use std::io::Read;
@@ -34,7 +35,8 @@ pub struct Item {
     pub label: String,
     pub created: u64,
     pub modified: u64,
-    pub data_uuid: Option<Uuid>, // when Item is locked, this is None
+    pub data_uuid: Option<Uuid>,
+    // when Item is locked, this is None
     #[serde(skip)]
     pub data: Option<ItemData>,
 
@@ -111,9 +113,9 @@ impl Storage {
             ))
     }
 
-    pub fn with_collection<F, T>(&mut self, alias: &str, f: F) -> Result<T, std::io::Error>
-    where
-        F: FnOnce(&mut Collection) -> T,
+    pub fn with_collection<F, T>(&mut self, alias: String, f: F) -> Result<T, std::io::Error>
+        where
+            F: FnOnce(&mut Collection) -> T,
     {
         let mut collection = self
             .collections
@@ -127,8 +129,8 @@ impl Storage {
     }
 
     pub fn modify_collection<F, T>(&mut self, alias: &str, f: F) -> Result<T, std::io::Error>
-    where
-        F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
+        where
+            F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
     {
         let mut collection = self
             .collections
@@ -163,8 +165,8 @@ impl Storage {
         item_alias: &str,
         f: F,
     ) -> Result<T, std::io::Error>
-    where
-        F: FnOnce(&Item) -> Result<T, std::io::Error>,
+        where
+            F: FnOnce(&Item) -> Result<T, std::io::Error>,
     {
         let collection = self
             .collections
@@ -193,8 +195,8 @@ impl Storage {
         item_alias: &str,
         f: F,
     ) -> Result<T, std::io::Error>
-    where
-        F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
+        where
+            F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
     {
         let collection = self
             .collections
@@ -359,14 +361,14 @@ impl Collection {
             modified: ts,
             data: Some(ItemData {
                 uuid,
-                parameters: secret.1,
-                data: match secret_session.decrypt(&secret.2) {
+                parameters: secret.1.clone(),
+                data: match secret_session.decrypt(&secret.1, &secret.2) {
                     Ok(data) => data,
                     Err(e) => {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
                             format!("Error decrypting secret: {}", e),
-                        ))
+                        ));
                     }
                 },
                 content_type: secret.3,
@@ -457,10 +459,11 @@ impl Collection {
         let mut items_path = PathBuf::new();
         items_path.push(self.path.clone());
         items_path.push("items.json");
-        let mut file = File::open(items_path)?;
-        let mut data = String::new();
-        file.read_to_string(&mut data)?;
-        let collection_secrets: CollectionSecrets = serde_json::from_str(&data)?;
+        let data = fs::read_to_string(items_path)
+            .ok()
+            .or(Some("".to_string()))
+            .unwrap();
+        let collection_secrets: CollectionSecrets = serde_json::from_str(&data).ok().or(Some(CollectionSecrets::new())).unwrap();
         match &mut self.items {
             Some(items) => {
                 for item in items {
@@ -516,7 +519,7 @@ impl Item {
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
                             format!("Error encrypting secret: {}", e),
-                        ))
+                        ));
                     }
                 },
                 data.content_type.clone(),
@@ -537,14 +540,14 @@ impl Item {
         trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {
             uuid: self.data_uuid.unwrap_or_else(|| Uuid::new_v4()),
-            parameters,
-            data: match session.decrypt(value) {
+            parameters: parameters.clone(),
+            data: match session.decrypt(&parameters, value) {
                 Ok(data) => data,
                 Err(e) => {
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::PermissionDenied,
                         format!("Error decrypting secret: {}", e),
-                    ))
+                    ));
                 }
             },
             content_type,

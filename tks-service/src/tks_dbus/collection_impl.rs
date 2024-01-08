@@ -15,9 +15,10 @@ use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use arg::cast;
 use dbus::arg;
-use dbus::arg::{PropMap, RefArg};
+use dbus::arg::RefArg;
 use dbus::message::SignalArgs;
 use log::{debug, error, trace};
+use pinentry::{ConfirmationDialog, MessageDialog, PassphraseInput};
 use std::collections::HashMap;
 
 pub struct CollectionHandle {
@@ -69,7 +70,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(&self.alias, |collection| {
+            .with_collection(self.alias.clone(), |collection| {
                 collection
                     .items
                     .as_ref()
@@ -151,17 +152,45 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match self.locked() {
             Ok(true) => {
                 debug!(
-                    "Collection '{}' is locked, now preparing prompt",
+                    "Collection '{}' is locked, now preparing prompt to unlock",
                     self.alias
                 );
-                let prompt = PromptImpl::new();
-                let prompt_path = prompt.get_dbus_handle().path();
-                register_object!(
-                    register_org_freedesktop_secret_prompt::<PromptHandle>,
-                    prompt.get_dbus_handle()
-                );
-                let item_path = dbus::Path::from("/");
-                return Ok((item_path, prompt_path));
+                if let Some(mut confirmation) = ConfirmationDialog::with_default_binary() {
+                    confirmation.with_ok("Yes").with_timeout(10);
+                    let collection_name = self.alias.clone();
+                    let prompt = PromptImpl::new(
+                        confirmation,
+                        format!("Unlock collection '{}'?", self.alias),
+                        move || {
+                            debug!("Prompt confirmed");
+                            let _ = STORAGE.lock().unwrap().with_collection(
+                                collection_name.clone(),
+                                |collection| {
+                                    collection.unlock().map_err(|e| {
+                                        error!("Error unlocking collection: {}", e);
+                                        dbus::MethodErr::failed(&format!(
+                                            "Error unlocking collection: {}",
+                                            e
+                                        ))
+                                    })
+                                },
+                            );
+                        },
+                        None,
+                    );
+                    let prompt_path = prompt.path();
+                    register_object!(
+                        register_org_freedesktop_secret_prompt::<PromptHandle>,
+                        prompt
+                    );
+                    let item_path = dbus::Path::from("/");
+                    return Ok((item_path, prompt_path));
+                } else {
+                    error!("Error creating confirmation dialog. Do you have pinentry installed?");
+                    return Err(dbus::MethodErr::failed(
+                        &"Error creating confirmation dialog",
+                    ));
+                };
             }
             Err(_) => {
                 error!("Unexpected error occured");
@@ -179,7 +208,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         };
         let mut storage = STORAGE.lock().unwrap();
         let rc = storage
-            .with_collection(&self.alias, |collection| {
+            .with_collection(self.alias.clone(), |collection| {
                 collection.create_item(
                     &item_label,
                     item_attributes,
@@ -223,7 +252,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(&self.alias, |collection| match &collection.items {
+            .with_collection(self.alias.clone(), |collection| match &collection.items {
                 Some(items) => {
                     let is = items
                         .iter()
@@ -265,7 +294,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(&self.alias, |collection| collection.locked)
+            .with_collection(self.alias.clone(), |collection| collection.locked)
         {
             Ok(locked) => Ok(locked),
             Err(e) => Err(dbus::MethodErr::failed(&format!(
@@ -278,7 +307,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(&self.alias, |collection| collection.created)
+            .with_collection(self.alias.clone(), |collection| collection.created)
         {
             Ok(created) => Ok(created),
             Err(e) => Err(dbus::MethodErr::failed(&format!(
@@ -291,7 +320,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(&self.alias, |collection| collection.modified)
+            .with_collection(self.alias.clone(), |collection| collection.modified)
         {
             Ok(modified) => Ok(modified),
             Err(e) => Err(dbus::MethodErr::failed(&format!(

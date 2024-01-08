@@ -25,13 +25,11 @@ pub struct ServiceImpl {}
 impl ServiceImpl {
     pub fn new() -> ServiceImpl {
         let coll = CollectionImpl::new("default");
-        tokio::spawn(async move {
-            trace!("Registering default collection");
-            register_object!(
-                register_org_freedesktop_secret_collection::<CollectionHandle>,
-                coll.get_dbus_handle()
-            );
-        });
+        let coll_handle = coll.get_dbus_handle();
+        register_object!(
+            register_org_freedesktop_secret_collection::<CollectionHandle>,
+            coll_handle
+        );
         ServiceImpl {}
     }
     pub fn get_dbus_handle(&self) -> ServiceHandle {

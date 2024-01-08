@@ -51,7 +51,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.collection_alias.as_str(), |collection| {
+            .with_collection(self.collection_alias.clone(), |collection| {
                 collection.delete_item(&self.label)
             }) {
             Ok(_) => {
