@@ -71,7 +71,19 @@ lazy_static! {
 impl Storage {
     fn new() -> Result<Self, std::io::Error> {
         let mut storage = Storage {
-            path: OsString::from(SETTINGS.lock().unwrap().storage.path.clone()),
+            path: OsString::from(
+                SETTINGS
+                    .lock()
+                    .map_err(|e| {
+                        std::io::Error::new(
+                            std::io::ErrorKind::Other,
+                            format!("Error getting settings: {}", e),
+                        )
+                    })?
+                    .storage
+                    .path
+                    .clone(),
+            ),
             collections: Vec::new(),
         };
         // check if the storage directory exists
@@ -80,23 +92,21 @@ impl Storage {
             .recursive(true)
             .create(storage.path.clone())?;
 
-        let paths = std::fs::read_dir(storage.path.clone()).unwrap();
+        let paths = std::fs::read_dir(storage.path.clone())?;
         for path in paths {
-            let collection_path = path.unwrap().path();
+            let collection_path = path?.path();
             storage
                 .collections
-                .push(Self::load_collection(&collection_path).unwrap());
+                .push(Self::load_collection(&collection_path)?);
         }
 
         // look for the default collection and create it if it doesn't exist
-        match storage.read_alias("default") {
-            Ok(name) => name,
-            Err(_) => {
-                error!("Creating default collection");
-                let _ = storage.create_collection("default", "default", &HashMap::new());
-                "default".to_string()
-            }
-        };
+        let _ = storage.read_alias("default").or_else(|_| {
+            error!("Creating default collection");
+            storage
+                .create_collection("default", "default", &HashMap::new())
+                .map(|_| "default".to_string())
+        })?;
 
         Ok(storage)
     }
@@ -114,8 +124,8 @@ impl Storage {
     }
 
     pub fn with_collection<F, T>(&mut self, alias: String, f: F) -> Result<T, std::io::Error>
-        where
-            F: FnOnce(&mut Collection) -> T,
+    where
+        F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
     {
         let mut collection = self
             .collections
@@ -125,36 +135,31 @@ impl Storage {
                 std::io::ErrorKind::NotFound,
                 format!("Collection '{}' not found", alias),
             ))?;
-        Ok(f(&mut collection))
+        f(&mut collection)
     }
 
-    pub fn modify_collection<F, T>(&mut self, alias: &str, f: F) -> Result<T, std::io::Error>
-        where
-            F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
+    pub fn modify_collection<F>(&mut self, alias: &str, f: F) -> Result<(), std::io::Error>
+    where
+        F: FnOnce(&mut Collection) -> Result<(), std::io::Error>,
     {
-        let mut collection = self
-            .collections
+        self.collections
             .iter_mut()
             .find(|c| c.name == alias)
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
                 format!("Collection '{}' not found", alias),
-            ))?;
-        match f(&mut collection) {
-            Ok(t) => {
-                collection.modified = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap()
-                    .as_secs()
-                    .into();
+            ))
+            .and_then(|collection| {
+                f(collection)?;
+                Ok(collection)
+            })
+            .and_then(|collection| {
                 // TODO the collection name may have changed; in this case, we might need to also
                 // update the collection's path on disk; but for the moment, it should still reload
                 // fine as the correct collection name gets serialized on disk
-                Storage::save_collection(&mut collection)?;
-                Ok(t)
-            }
-            Err(e) => Err(e),
-        }
+                Storage::save_collection(collection)?;
+                Ok(())
+            })
     }
 
     /// This performs a read-only operation on a collection item
@@ -165,8 +170,8 @@ impl Storage {
         item_alias: &str,
         f: F,
     ) -> Result<T, std::io::Error>
-        where
-            F: FnOnce(&Item) -> Result<T, std::io::Error>,
+    where
+        F: FnOnce(&Item) -> Result<T, std::io::Error>,
     {
         let collection = self
             .collections
@@ -195,8 +200,8 @@ impl Storage {
         item_alias: &str,
         f: F,
     ) -> Result<T, std::io::Error>
-        where
-            F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
+    where
+        F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
     {
         let collection = self
             .collections
@@ -248,12 +253,9 @@ impl Storage {
         let mut collection_path = PathBuf::new();
         collection_path.push(self.path.clone());
         collection_path.push(name);
-        let mut coll = Collection::new(name, collection_path.as_os_str());
-        match alias {
-            "" => {}
-            _ => {
-                coll.aliases = Some(vec![alias.to_string()]);
-            }
+        let mut coll = Collection::new(name, collection_path.as_os_str())?;
+        if !alias.is_empty() {
+            coll.aliases = Some(vec![alias.to_string()]);
         }
         Self::save_collection(&mut coll)?;
         self.collections.push(coll);
@@ -281,7 +283,12 @@ impl Storage {
         let mut file = File::create(metadata_path)?;
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Error getting system time: {}", e),
+                )
+            })?
             .as_secs()
             .into();
         collection.modified = ts;
@@ -314,10 +321,15 @@ impl Storage {
 }
 
 impl Collection {
-    fn new(name: &str, path: &OsStr) -> Collection {
+    fn new(name: &str, path: &OsStr) -> Result<Collection, std::io::Error> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Error getting system time: {}", e),
+                )
+            })?
             .as_secs()
             .into();
         let collection = Collection {
@@ -331,7 +343,7 @@ impl Collection {
             modified: ts,
         };
 
-        collection
+        Ok(collection)
     }
 
     pub fn create_item(
@@ -351,7 +363,12 @@ impl Collection {
 
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .unwrap()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Error getting system time: {}", e),
+                )
+            })?
             .as_secs()
             .into();
         let uuid = Uuid::new_v4();
@@ -378,29 +395,24 @@ impl Collection {
         };
         match self.items.as_mut() {
             Some(items) => {
-                let index = items.iter().position(|i| i.attributes == item.attributes);
-                match index {
-                    Some(index) => {
-                        if replace {
-                            items[index] = item;
-                        } else {
-                            return Err(std::io::Error::new(
-                                std::io::ErrorKind::AlreadyExists,
-                                format!("Item already exists"),
-                            ));
-                        }
+                if let Some(index) = items.iter().position(|i| i.attributes == item.attributes) {
+                    if replace {
+                        items[index] = item;
+                    } else {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::AlreadyExists,
+                            format!("Item already exists"),
+                        ));
                     }
-                    None => {
-                        items.push(item);
-                    }
+                } else {
+                    items.push(item);
                 }
             }
             None => {
                 self.items = Some(vec![item]);
             }
         }
-        Storage::save_collection(self)?;
-        Ok(())
+        Storage::save_collection(self)
     }
 
     pub fn delete_item(&mut self, label: &str) -> Result<(), std::io::Error> {
@@ -410,30 +422,22 @@ impl Collection {
                 format!("Collection is locked"),
             ));
         }
-        match self.items.as_mut() {
-            Some(items) => {
-                let index = items.iter().position(|i| i.label == label);
-                match index {
-                    Some(index) => {
-                        items.remove(index);
-                    }
-                    None => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::NotFound,
-                            format!("Item not found"),
-                        ));
-                    }
-                }
-            }
-            None => {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::NotFound,
-                    format!("Item not found"),
-                ));
-            }
-        }
-        Storage::save_collection(self)?;
-        Ok(())
+        self.items
+            .as_ref()
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item not found"))
+            })
+            .unwrap()
+            .iter()
+            .position(|i| i.label == label)
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item not found"))
+            })
+            .and_then(|i| {
+                self.items.as_mut().unwrap().swap_remove(i);
+                Storage::save_collection(self)?;
+                Ok(())
+            })
     }
 
     fn get_secrets(&self) -> CollectionSecrets {
@@ -463,7 +467,10 @@ impl Collection {
             .ok()
             .or(Some("".to_string()))
             .unwrap();
-        let collection_secrets: CollectionSecrets = serde_json::from_str(&data).ok().or(Some(CollectionSecrets::new())).unwrap();
+        let collection_secrets: CollectionSecrets = serde_json::from_str(&data)
+            .ok()
+            .or(Some(CollectionSecrets::new()))
+            .unwrap();
         match &mut self.items {
             Some(items) => {
                 for item in items {

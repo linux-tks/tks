@@ -46,6 +46,12 @@ impl DBusHandle for ItemHandle {
     }
 }
 
+impl From<ItemHandle> for dbus::Path<'static> {
+    fn from(handle: ItemHandle) -> Self {
+        handle.path()
+    }
+}
+
 impl OrgFreedesktopSecretItem for ItemHandle {
     fn delete(&mut self) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         match STORAGE

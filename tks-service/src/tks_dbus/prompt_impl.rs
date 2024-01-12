@@ -32,19 +32,21 @@ pub struct PromptHandle {
     prompt_id: usize,
 }
 
+type PromptAction = dyn FnMut() -> Result<(), std::io::Error> + Send;
+
 pub struct PromptImpl {
     prompt_id: usize,
     dialog: Box<dyn Dialog + Send>,
     text: String,
-    on_confirmed: Box<dyn Fn() + Send>,
-    on_denied: Option<Box<dyn Fn() + Send>>,
+    on_confirmed: Box<PromptAction>,
+    on_denied: Option<Box<PromptAction>>,
 }
 
 impl PromptImpl {
     pub fn new<D, F>(dialog: D, text: String, on_confirmed: F, on_denied: Option<F>) -> PromptHandle
     where
         D: Dialog + Send + 'static,
-        F: Fn() + Send + 'static,
+        F: FnMut() -> Result<(), std::io::Error> + Send + 'static,
     {
         let prompt_id = {
             let mut counter = PROMPT_COUNTER.lock().unwrap();
@@ -56,7 +58,7 @@ impl PromptImpl {
             text,
             dialog: Box::new(dialog),
             on_confirmed: Box::new(on_confirmed),
-            on_denied: on_denied.map(|f| Box::new(f) as Box<dyn Fn() + Send>),
+            on_denied: on_denied.map(|f| Box::new(f) as Box<PromptAction>),
         };
         let handle = prompt.get_dbus_handle();
         PROMPTS.lock().unwrap().insert(prompt_id, prompt);
@@ -90,10 +92,18 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
                     trace!("confirmation is {}", x);
                     dismissed = !x;
                     if x {
-                        (prompt.on_confirmed)();
+                        (prompt.on_confirmed)().map_err(|e| {
+                            dbus::MethodErr::failed(
+                                format!("Prompt on_confirmed failed {}", e).as_str(),
+                            )
+                        })?;
                     } else {
-                        if let Some(f) = &prompt.on_denied {
-                            f();
+                        if let Some(f) = &mut prompt.on_denied {
+                            f().map_err(|e| {
+                                dbus::MethodErr::failed(
+                                    format!("Prompt on_deny failed {}", e).as_str(),
+                                )
+                            })?;
                         }
                     }
                 }

@@ -56,8 +56,15 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     > {
         trace!("open_session {}", algorithm);
         let mut sm = SESSION_MANAGER.lock().unwrap();
-        match sm.new_session(algorithm, arg::cast(&input.0)) {
-            Ok((sess_id, vector)) => {
+        sm.new_session(algorithm, arg::cast(&input.0))
+            .or_else(|e| {
+                error!("Error creating session: {}", e);
+                Err(dbus::MethodErr::failed(&format!(
+                    "Error creating session: {}",
+                    e
+                )))
+            })
+            .and_then(|(sess_id, vector)| {
                 let output = match vector {
                     Some(e) => arg::Variant(Box::new(e.clone()) as Box<dyn arg::RefArg + 'static>),
                     None => arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg + 'static>),
@@ -69,15 +76,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     path
                 };
                 Ok((output, path))
-            }
-            Err(e) => {
-                error!("Error creating session: {}", e);
-                Err(dbus::MethodErr::failed(&format!(
-                    "Error creating session: {}",
-                    e
-                )))
-            }
-        }
+            })
     }
 
     /// Create a new collection
@@ -94,11 +93,10 @@ impl OrgFreedesktopSecretService for ServiceImpl {
 
         match alias.as_str() {
             "default" => {
-                let prompt_path = dbus::Path::from("/");
                 // TODO: should we emit the CollectionCreated signal here?
                 return Ok((
                     dbus::Path::from("/org/freedesktop/secrets/collection/default"),
-                    prompt_path,
+                    dbus::Path::from("/"),
                 ));
             }
             _ => {}
@@ -106,23 +104,20 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         let (string_props, _) = convert_prop_map!(properties);
 
         // now check if user specified the org.freedesktop.Secret.Collection.Label property
-        let label = match string_props.get("org.freedesktop.Secret.Collection.Label") {
-            Some(s) => s.clone(),
-            None => {
-                debug!("Error creating collection: no label specified");
-                return Err(dbus::MethodErr::failed(&format!(
+        let label = string_props
+            .get("org.freedesktop.Secret.Collection.Label")
+            .ok_or_else(|| {
+                dbus::MethodErr::failed(&format!(
                     "Error creating collection: {}",
                     "No label specified"
-                )));
-            }
-        };
+                ))
+            })?;
 
-        match STORAGE
+        STORAGE
             .lock()
             .unwrap()
             .create_collection(&label, &alias, &string_props)
-        {
-            Ok(_) => {
+            .and_then(|()| {
                 let coll = CollectionImpl::new(&label);
                 let collection_path = coll.get_dbus_handle().path();
                 register_object!(
@@ -140,16 +135,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     );
                 });
                 let prompt_path = dbus::Path::from("/");
-                return Ok((collection_path, prompt_path));
-            }
-            Err(e) => {
+                Ok((collection_path, prompt_path))
+            })
+            .map_err(|e| {
                 error!("Error creating collection: {}", e);
-                return Err(dbus::MethodErr::failed(&format!(
-                    "Error creating collection: {}",
-                    e
-                )));
-            }
-        }
+                dbus::MethodErr::failed(&format!("Error creating collection: {}", e))
+            })
     }
     fn search_items(
         &mut self,
@@ -209,19 +200,20 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .iter_mut()
             .filter(|c| collection_names.contains(&c.name))
             .for_each(|c| {
-                match c.unlock() {
-                    Ok(_) => {
+                let _ = c
+                    .unlock()
+                    .and_then(|()| {
                         objects.iter().for_each(|p| {
                             if p.to_string().contains(&c.name) {
                                 unlocked.push(p.clone());
                             }
                         });
-                    }
-                    Err(e) => {
+                        Ok(())
+                    })
+                    .map_err(|e| {
                         // TODO this may instead require a prompt
-                        assert!(false, "Error unlocking collection: {}", e);
-                    }
-                }
+                        error!("Couldn't lock collection {}: {:?}", c.name, e);
+                    });
             });
         let prompt = dbus::Path::from("/");
         debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompt);
@@ -267,21 +259,20 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         dbus::MethodErr,
     > {
         trace!("get_secrets {:?}", items);
-        let session_id = match session.split('/').last().unwrap().parse::<usize>() {
-            Ok(id) => id,
-            Err(_) => {
+        let session_id = session
+            .split('/')
+            .last()
+            .unwrap()
+            .parse::<usize>()
+            .map_err(|_| {
                 error!("Invalid session ID");
-                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
-            }
-        };
+                dbus::MethodErr::failed(&"Invalid session ID")
+            })?;
         let sm = SESSION_MANAGER.lock().unwrap();
-        let session = match sm.sessions.get(session_id) {
-            Some(s) => s,
-            None => {
-                error!("Session {} not found", session_id);
-                return Err(dbus::MethodErr::failed(&"Session not found"));
-            }
-        };
+        let session = sm.sessions.get(session_id).ok_or_else(|| {
+            error!("Session {} not found", session_id);
+            dbus::MethodErr::failed(&"Session not found")
+        })?;
         type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
         let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
         items
@@ -313,19 +304,17 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         trace!("read_alias {}", name);
         match name.as_str() {
-            "default" => match STORAGE.lock().unwrap().read_alias(&name) {
-                Ok(name) => Ok(dbus::Path::from(format!(
-                    "/org/freedesktop/secrets/collection/{}",
-                    name
-                ))),
-                Err(e) => {
+            "default" => STORAGE
+                .lock()
+                .unwrap()
+                .read_alias(&name)
+                .map(|name| {
+                    dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", name))
+                })
+                .map_err(|e| {
                     error!("Error reading alias: {}", e);
-                    return Err(dbus::MethodErr::failed(&format!(
-                        "Error reading alias: {}",
-                        e
-                    )));
-                }
-            },
+                    dbus::MethodErr::failed(&format!("Error reading alias: {}", e))
+                }),
             x => {
                 return Err(dbus::MethodErr::failed(&format!(
                     "Alias not recognized: '{}'",
@@ -348,10 +337,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
         let collections = &STORAGE.lock().unwrap().collections;
-        let c = collections
+        Ok(collections
             .into_iter()
             .map(|c| dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", c.name)))
-            .collect();
-        Ok(c)
+            .collect())
     }
 }

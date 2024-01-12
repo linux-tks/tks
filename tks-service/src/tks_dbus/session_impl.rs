@@ -9,10 +9,10 @@ use openssl::md::Md;
 use openssl::pkey::Id;
 use openssl::pkey::PKey;
 use openssl::pkey_ctx::PkeyCtx;
-use openssl::symm::Mode;
-use std::{error, panic};
+use openssl::symm::{decrypt, Cipher};
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::{error, panic};
 use vec_map::VecMap;
 
 pub struct Session {
@@ -123,23 +123,19 @@ impl Session {
     ) -> Result<Option<Vec<u8>>, Box<dyn error::Error>> {
         match self.algorithm.as_str() {
             PLAIN => {
-                match input {
-                    Some(_) => {
-                        error!("Algorithm {} does not take input", self.algorithm);
-                        return Err("Algorithm does not take input".into());
-                    }
-                    None => (),
+                if let Some(_) = input {
+                    error!("Algorithm {} does not take input", self.algorithm);
+                    Err("Algorithm does not take input".into())
+                } else {
+                    Ok(None)
                 }
-                Ok(None)
             }
 
-            DH_AES => match input {
-                Some(input) => {
-                    let private_key = PKey::generate_x25519()?;
-                    let output = private_key.raw_public_key()?;
+            DH_AES => {
+                if let Some(input) = input {
+                    let peer_key = PKey::public_key_from_raw_bytes(&input, Id::X25519)?;
 
-                    let peer_key =
-                        PKey::public_key_from_raw_bytes(&input[0..output.len()], Id::X25519)?;
+                    let private_key = PKey::generate_x25519()?;
                     let mut deriver_1 = Deriver::new(&private_key)?;
                     deriver_1.set_peer(&peer_key)?;
                     let derived_vec = deriver_1.derive_to_vec()?;
@@ -154,13 +150,15 @@ impl Session {
                     let _bytes = d2_ctx.derive(Some(&mut aes_key_bytes))?;
                     self.aes_key_bytes = Some(aes_key_bytes.into());
 
-                    Ok(Some(output))
+                    Ok(Some(private_key.raw_public_key()?))
+                } else {
+                    Err("No input provided".into())
                 }
-                None => return Err("No input provided".into()),
-            },
+            }
+
             _ => {
                 error!("Unsupported algorithm: '{}'", self.algorithm);
-                return Err("Unsupported algorithm".into());
+                Err("Unsupported algorithm".into())
             }
         }
     }
@@ -169,31 +167,13 @@ impl Session {
         match self.algorithm.as_str() {
             PLAIN => Ok(input.clone()),
             DH_AES => {
-                let mut decrypted: Vec<u8> = vec![0; input.len()];
-                let mut iv = iv.clone(); // aes_ige requires iv to be &mut so we need to do this
-                if let Ok(key) = AesKey::new_decrypt(&*self.aes_key_bytes.as_ref().unwrap()) {
-                    // let _ = panic::catch_unwind(move || aes_ige(
-                    //     &*input,
-                    //     decrypted.as_mut_slice(),
-                    //     &key,
-                    //     &mut iv,
-                    //     Mode::Decrypt,
-                    // )).map_err(|e| {
-                    //     error!("aes_ige panicked {:?}", e);
-                    //     return Err::<Vec<u8>, _>("Cannot decrypt");
-                    // });
-                    aes_ige(
-                        &*input,
-                        decrypted.as_mut_slice(),
-                        &key,
-                        &mut iv,
-                        Mode::Decrypt,
-                    );
+                if let Some(key) = self.aes_key_bytes.as_ref() {
+                    let cipher = Cipher::aes_128_cbc();
+                    Ok(decrypt(cipher, key, Some(iv), input)?)
                 } else {
                     error!("No key");
-                    return Err("No key".into());
+                    Err("No key".into())
                 }
-                Ok(decrypted.into())
             }
             _ => {
                 error!("Unsupported algorithm: {}", self.algorithm);
