@@ -24,7 +24,8 @@ use std::io::ErrorKind;
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionHandle {
-    alias: String,
+    pub alias: String,
+    pub path: Option<dbus::Path<'static>>,
 }
 
 pub struct CollectionImpl {
@@ -40,18 +41,19 @@ impl CollectionImpl {
     pub fn get_dbus_handle(&self) -> CollectionHandle {
         CollectionHandle {
             alias: self.alias.clone(),
+            path: None,
         }
     }
 }
 
 impl DBusHandle for CollectionHandle {
     fn path(&self) -> dbus::Path<'static> {
-        match self.alias.as_str() {
+        // TODO: take care of alias characters which are not valid path characters
+        let p = dbus::Path::from(match self.alias.as_str() {
             "default" => "/org/freedesktop/secrets/aliases/default".to_string(),
             _ => format!("/org/freedesktop/secrets/collection/{}", self.alias),
-        }
-        .to_string()
-        .into()
+        });
+        self.path.as_ref().unwrap_or_else(|| &p).clone()
     }
 }
 
@@ -296,10 +298,12 @@ impl CollectionHandle {
         session_id: usize,
     ) -> Result<(dbus::Path, dbus::Path), std::io::Error> {
         let sm = SESSION_MANAGER.lock().unwrap();
-        let session = sm.sessions.get(session_id).ok_or(std::io::Error::new(
-            ErrorKind::Other,
-            format!("Session {} not found", session_id),
-        ))?;
+        let session = sm.sessions.get(session_id).ok_or_else(|| {
+            std::io::Error::new(
+                ErrorKind::Other,
+                format!("Session {} not found", session_id),
+            )
+        })?;
         let mut storage = STORAGE.lock().map_err(|e| {
             std::io::Error::new(
                 ErrorKind::Other,

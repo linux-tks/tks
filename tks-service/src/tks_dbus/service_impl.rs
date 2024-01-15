@@ -24,12 +24,20 @@ pub struct ServiceImpl {}
 
 impl ServiceImpl {
     pub fn new() -> ServiceImpl {
-        let coll = CollectionImpl::new("default");
-        let coll_handle = coll.get_dbus_handle();
-        register_object!(
-            register_org_freedesktop_secret_collection::<CollectionHandle>,
-            coll_handle
-        );
+        if let Ok(paths) = ServiceImpl::collections_and_paths() {
+            paths.iter().for_each(|p| {
+                let coll_handle = CollectionHandle {
+                    alias: p.0.clone(),
+                    path: Some(p.1.clone()),
+                };
+                register_object!(
+                    register_org_freedesktop_secret_collection::<CollectionHandle>,
+                    coll_handle
+                );
+            });
+        } else {
+            error!("Error received while attempting to read get stored collections. Service may not by able to operate.");
+        }
         ServiceImpl {}
     }
     pub fn get_dbus_handle(&self) -> ServiceHandle {
@@ -336,10 +344,52 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
-        let collections = &STORAGE.lock().unwrap().collections;
+        let (_, paths): (Vec<String>, Vec<dbus::Path>) = ServiceImpl::collections_and_paths()
+            .map_err(|e| {
+                error!("Error getting collections: {}", e);
+                dbus::MethodErr::failed(&format!("Error getting collections: {}", e))
+            })?
+            .iter()
+            .cloned()
+            .unzip();
+        Ok(paths)
+    }
+}
+
+impl ServiceImpl {
+    fn collections_and_paths() -> Result<Vec<(String, dbus::Path<'static>)>, std::io::Error> {
+        let collections = &STORAGE
+            .lock()
+            .map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Error getting settings: {}", e),
+                )
+            })?
+            .collections;
         Ok(collections
             .into_iter()
-            .map(|c| dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", c.name)))
+            .flat_map(|c| {
+                let mut paths: Vec<(String, dbus::Path)> = Vec::new();
+                let empty: Vec<String> = Vec::new();
+                paths.push((
+                    c.name.clone(),
+                    dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", c.name)),
+                ));
+                paths.extend(
+                    c.aliases
+                        .as_ref()
+                        .unwrap_or_else(|| &empty)
+                        .iter()
+                        .map(|s| {
+                            (
+                                c.name.clone(),
+                                dbus::Path::from(format!("/org/freedesktop/secrets/aliases/{}", s)),
+                            )
+                        }),
+                );
+                paths
+            })
             .collect())
     }
 }

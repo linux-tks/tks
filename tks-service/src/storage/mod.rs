@@ -49,7 +49,7 @@ pub struct Collection {
     schema_version: u8,
     pub name: String,
     pub items: Option<Vec<Item>>,
-    aliases: Option<Vec<String>>,
+    pub aliases: Option<Vec<String>>,
     pub created: u64,
     pub modified: u64,
 
@@ -131,10 +131,12 @@ impl Storage {
             .collections
             .iter_mut()
             .find(|c| c.name == alias)
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Collection '{}' not found", alias),
-            ))?;
+            .ok_or_else(|| {
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Collection '{}' not found", alias),
+                )
+            })?;
         f(&mut collection)
     }
 
@@ -382,6 +384,7 @@ impl Collection {
                 data: match secret_session.decrypt(&secret.1, &secret.2) {
                     Ok(data) => data,
                     Err(e) => {
+                        error!("Cannot decrypt secret: {}", e);
                         return Err(std::io::Error::new(
                             std::io::ErrorKind::PermissionDenied,
                             format!("Error decrypting secret: {}", e),
