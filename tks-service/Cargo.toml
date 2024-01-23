@@ -1,6 +1,6 @@
 [package]
 name = "tks-service"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
@@ -31,9 +31,5 @@ uuid = { version = "1.6.1", features = [ "v4", "fast-rng", "macro-diagnostics", 
 vec_map = "0.8.2"
 num-bigint = {  version = "0.4.4", features = ["rand"] }
 rand = "0.8"
-hmac = "0.12.1"
-sha2 = "0.11.0-pre.1"
-hmac-sha256 = "1.1.7"
-ring = "0.17.7"
 
 [dev-dependencies]

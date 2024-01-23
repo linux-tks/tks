@@ -20,7 +20,6 @@ use crate::settings::SETTINGS;
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
     uuid: Uuid,
-    parameters: Vec<u8>,
     data: Vec<u8>,
     pub content_type: String,
 }
@@ -35,20 +34,30 @@ pub struct Item {
     pub label: String,
     pub created: u64,
     pub modified: u64,
-    pub data_uuid: Option<Uuid>,
+    pub attributes: HashMap<String, String>,
+    pub id: ItemId,
+
     // when Item is locked, this is None
     #[serde(skip)]
     pub data: Option<ItemData>,
-
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
-    pub attributes: HashMap<String, String>,
 }
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct ItemId {
+    pub uuid: Uuid,
+    #[serde(skip)]
+    pub collection_uuid: Uuid,
+}
+
+static DEFAULT_NAME: &'static str = "default";
 
 #[derive(Serialize, Deserialize, Debug)]
 pub struct Collection {
     schema_version: u8,
+    pub uuid: Uuid,
+    pub default: bool,
     pub name: String,
-    pub items: Option<Vec<Item>>,
+    pub items: Vec<Item>,
     pub aliases: Option<Vec<String>>,
     pub created: u64,
     pub modified: u64,
@@ -65,50 +74,56 @@ pub struct Storage {
 }
 
 lazy_static! {
-    pub static ref STORAGE: Arc<Mutex<Storage>> = Arc::new(Mutex::new(Storage::new().unwrap()));
+    pub static ref STORAGE: Arc<Mutex<Storage>> = Arc::new(Mutex::new(Storage::new()));
 }
 
 impl Storage {
-    fn new() -> Result<Self, std::io::Error> {
-        let mut storage = Storage {
-            path: OsString::from(
-                SETTINGS
-                    .lock()
-                    .map_err(|e| {
-                        std::io::Error::new(
-                            std::io::ErrorKind::Other,
-                            format!("Error getting settings: {}", e),
-                        )
-                    })?
-                    .storage
-                    .path
-                    .clone(),
-            ),
-            collections: Vec::new(),
+    fn new() -> Self {
+        let do_create_storage = || {
+            let mut storage = Storage {
+                path: OsString::from(
+                    SETTINGS
+                        .lock()
+                        .map_err(|e| {
+                            std::io::Error::new(
+                                std::io::ErrorKind::Other,
+                                format!("Error getting settings: {}", e),
+                            )
+                        })?
+                        .storage
+                        .path
+                        .clone(),
+                ),
+                collections: Vec::new(),
+            };
+            // check if the storage directory exists
+            // if not, create it
+            let _ = DirBuilder::new()
+                .recursive(true)
+                .create(storage.path.clone())?;
+
+            let paths = std::fs::read_dir(storage.path.clone())?;
+            for path in paths {
+                let collection_path = path?.path();
+                storage
+                    .collections
+                    .push(Self::load_collection(&collection_path)?);
+            }
+
+            // look for the default collection and create it if it doesn't exist
+            let _ = storage.read_alias("default").or_else(|_| {
+                error!("Creating default collection");
+                storage
+                    .create_collection(DEFAULT_NAME, DEFAULT_NAME, &HashMap::new())
+                    .map(|_| "default".to_string())
+            })?;
+
+            Ok(storage)
         };
-        // check if the storage directory exists
-        // if not, create it
-        let _ = DirBuilder::new()
-            .recursive(true)
-            .create(storage.path.clone())?;
 
-        let paths = std::fs::read_dir(storage.path.clone())?;
-        for path in paths {
-            let collection_path = path?.path();
-            storage
-                .collections
-                .push(Self::load_collection(&collection_path)?);
-        }
-
-        // look for the default collection and create it if it doesn't exist
-        let _ = storage.read_alias("default").or_else(|_| {
-            error!("Creating default collection");
-            storage
-                .create_collection("default", "default", &HashMap::new())
-                .map(|_| "default".to_string())
-        })?;
-
-        Ok(storage)
+        do_create_storage().unwrap_or_else(|e: std::io::Error| {
+            panic!("Error initializing storage: {:}", e);
+        })
     }
 
     pub fn read_alias(&mut self, alias: &str) -> Result<String, std::io::Error> {
@@ -123,33 +138,33 @@ impl Storage {
             ))
     }
 
-    pub fn with_collection<F, T>(&mut self, alias: String, f: F) -> Result<T, std::io::Error>
+    pub fn with_collection<F, T>(&mut self, uuid: Uuid, f: F) -> Result<T, std::io::Error>
     where
         F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
     {
         let mut collection = self
             .collections
             .iter_mut()
-            .find(|c| c.name == alias)
+            .find(|c| c.uuid == uuid)
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("Collection '{}' not found", alias),
+                    format!("Collection '{}' not found", uuid),
                 )
             })?;
         f(&mut collection)
     }
 
-    pub fn modify_collection<F>(&mut self, alias: &str, f: F) -> Result<(), std::io::Error>
+    pub fn modify_collection<F>(&mut self, uuid: &Uuid, f: F) -> Result<(), std::io::Error>
     where
         F: FnOnce(&mut Collection) -> Result<(), std::io::Error>,
     {
         self.collections
             .iter_mut()
-            .find(|c| c.name == alias)
+            .find(|c| c.uuid == *uuid)
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Collection '{}' not found", alias),
+                format!("Collection '{}' not found", uuid),
             ))
             .and_then(|collection| {
                 f(collection)?;
@@ -168,8 +183,8 @@ impl Storage {
     /// for RW operations, use modify_item
     pub fn with_item<F, T>(
         &mut self,
-        collection_alias: &str,
-        item_alias: &str,
+        collection_uuid: &Uuid,
+        item_uuid: &Uuid,
         f: F,
     ) -> Result<T, std::io::Error>
     where
@@ -178,20 +193,18 @@ impl Storage {
         let collection = self
             .collections
             .iter_mut()
-            .find(|c| c.name == collection_alias)
+            .find(|c| c.uuid == *collection_uuid)
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Collection '{}' not found", collection_alias),
+                format!("Collection '{}' not found", collection_uuid),
             ))?;
         let item = collection
             .items
-            .as_mut()
-            .unwrap()
             .iter_mut()
-            .find(|i| i.label == item_alias)
+            .find(|i| i.id.uuid == *item_uuid)
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Item '{}' not found", item_alias),
+                format!("Item '{}' not found", item_uuid),
             ))?;
         f(&item)
     }
@@ -199,7 +212,7 @@ impl Storage {
     pub fn modify_item<F, T>(
         &mut self,
         collection_alias: &str,
-        item_alias: &str,
+        item_uuid: &Uuid,
         f: F,
     ) -> Result<T, std::io::Error>
     where
@@ -215,13 +228,11 @@ impl Storage {
             ))?;
         let mut item = collection
             .items
-            .as_mut()
-            .unwrap()
             .iter_mut()
-            .find(|i| i.label == item_alias)
+            .find(|i| i.id.uuid == *item_uuid)
             .ok_or(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Item '{}' not found", item_alias),
+                format!("Item '{}' not found", item_uuid),
             ))?;
         match f(&mut item) {
             Ok(t) => {
@@ -251,7 +262,7 @@ impl Storage {
         name: &str,
         alias: &str,
         _properties: &HashMap<String, String>,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<Uuid, std::io::Error> {
         let mut collection_path = PathBuf::new();
         collection_path.push(self.path.clone());
         collection_path.push(name);
@@ -259,14 +270,15 @@ impl Storage {
         if !alias.is_empty() {
             coll.aliases = Some(vec![alias.to_string()]);
         }
+        let uuid = coll.uuid;
         Self::save_collection(&mut coll)?;
         self.collections.push(coll);
         trace!(
             "Created collection '{}' at path '{}'",
-            name,
+            uuid,
             collection_path.display()
         );
-        Ok(())
+        Ok(uuid)
     }
 
     fn save_collection(collection: &mut Collection) -> Result<(), std::io::Error> {
@@ -308,6 +320,7 @@ impl Storage {
     }
 
     fn load_collection(path: &PathBuf) -> Result<Collection, std::io::Error> {
+        trace!("Loading collection from path '{}'", path.display());
         let mut metadata_path = PathBuf::new();
         metadata_path.push(path);
         metadata_path.push("metadata.json");
@@ -335,10 +348,12 @@ impl Collection {
             .as_secs()
             .into();
         let collection = Collection {
+            uuid: Uuid::new_v4(),
+            default: DEFAULT_NAME == name,
             schema_version: 1,
             name: name.to_string(),
             path: path.to_os_string(),
-            items: None,
+            items: Vec::new(),
             aliases: None,
             locked: true,
             created: ts,
@@ -354,7 +369,7 @@ impl Collection {
         properties: HashMap<String, String>,
         secret: (&Session, Vec<u8>, Vec<u8>, String),
         replace: bool,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<ItemId, std::io::Error> {
         if self.locked {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -380,7 +395,6 @@ impl Collection {
             modified: ts,
             data: Some(ItemData {
                 uuid,
-                parameters: secret.1.clone(),
                 data: match secret_session.decrypt(&secret.1, &secret.2) {
                     Ok(data) => data,
                     Err(e) => {
@@ -393,32 +407,41 @@ impl Collection {
                 },
                 content_type: secret.3,
             }),
-            data_uuid: Some(uuid),
+            id: ItemId {
+                collection_uuid: self.uuid,
+                uuid,
+            },
             attributes: properties,
         };
-        match self.items.as_mut() {
-            Some(items) => {
-                if let Some(index) = items.iter().position(|i| i.attributes == item.attributes) {
-                    if replace {
-                        items[index] = item;
-                    } else {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::AlreadyExists,
-                            format!("Item already exists"),
-                        ));
+        let item = if let Some(index) = self.items.iter().position(|i| {
+            i.attributes == item.attributes
+                && match (&i.data, &item.data) {
+                    (Some(d1), Some(d2)) => {
+                        d1.content_type == d2.content_type && d1.data == d2.data
                     }
-                } else {
-                    items.push(item);
+                    (None, None) => true,
+                    _ => false,
                 }
+        }) {
+            if replace {
+                self.items[index] = item;
+                self.items.get(index).unwrap()
+            } else {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    format!("Item already exists"),
+                ));
             }
-            None => {
-                self.items = Some(vec![item]);
-            }
-        }
-        Storage::save_collection(self)
+        } else {
+            self.items.push(item);
+            self.items.last().unwrap()
+        };
+        let item_id = item.id.clone();
+        Storage::save_collection(self)?;
+        Ok(item_id)
     }
 
-    pub fn delete_item(&mut self, label: &str) -> Result<(), std::io::Error> {
+    pub fn delete_item(&mut self, uuid: &Uuid) -> Result<Item, std::io::Error> {
         if self.locked {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::PermissionDenied,
@@ -426,41 +449,31 @@ impl Collection {
             ));
         }
         self.items
-            .as_ref()
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item not found"))
-            })
-            .unwrap()
             .iter()
-            .position(|i| i.label == label)
+            .position(|i| i.id.uuid == *uuid)
             .ok_or_else(|| {
                 std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item not found"))
             })
             .and_then(|i| {
-                self.items.as_mut().unwrap().swap_remove(i);
+                let older = self.items.swap_remove(i);
                 Storage::save_collection(self)?;
-                Ok(())
+                Ok(older)
             })
     }
 
     fn get_secrets(&self) -> CollectionSecrets {
-        let mut secrets = CollectionSecrets::new();
-        match &self.items {
-            Some(items) => {
-                for item in items {
-                    match &item.data {
-                        Some(data) => secrets.items.push((*data).clone()),
-                        None => {}
-                    }
-                }
-            }
-            None => {}
+        CollectionSecrets {
+            items: self
+                .items
+                .iter()
+                .map(|i| i.data.as_ref().unwrap().clone())
+                .collect(),
         }
-        secrets
     }
 
     pub fn unlock(&mut self) -> Result<(), std::io::Error> {
-        if !self.locked {
+        if !self.locked || self.items.is_empty() {
+            self.locked = false;
             return Ok(());
         }
         let mut items_path = PathBuf::new();
@@ -474,42 +487,29 @@ impl Collection {
             .ok()
             .or(Some(CollectionSecrets::new()))
             .unwrap();
-        match &mut self.items {
-            Some(items) => {
-                for item in items {
-                    match &mut item.data_uuid {
-                        Some(uuid) => {
-                            let secret = collection_secrets
-                                .items
-                                .iter()
-                                .find(|s| s.uuid == *uuid)
-                                .ok_or(std::io::Error::new(
-                                    // TODO: maybe we should put the service in a fail state if we can't unlock a collection
-                                    std::io::ErrorKind::NotFound,
-                                    format!("Secrets file does not contain secret for item "),
-                                ))?;
-                            item.data = Some(secret.clone());
-                        }
-                        None => {}
-                    }
-                }
-            }
-            None => {}
-        }
+
+        self.items.iter_mut().for_each(|item| {
+            let _ = collection_secrets
+                .items
+                .iter()
+                .find(|s| s.uuid == item.id.uuid)
+                .ok_or(std::io::Error::new(
+                    // TODO: maybe we should put the service in a fail state if we can't unlock a collection
+                    std::io::ErrorKind::NotFound,
+                    format!("Secrets file does not contain secret for item "),
+                ))
+                .and_then(|s| {
+                    item.data = Some(s.clone());
+                    Ok(())
+                });
+        });
         self.locked = false;
         Ok(())
     }
-    pub fn lock(&mut self) -> Result<bool, std::io::Error> {
+    pub fn lock(&mut self) -> Result<(), std::io::Error> {
         self.locked = true;
-        match &mut self.items {
-            Some(items) => {
-                for item in items {
-                    item.data = None;
-                }
-                Ok(true)
-            }
-            None => Ok(true),
-        }
+        self.items.iter_mut().for_each(|item| item.data = None);
+        Ok(())
     }
 }
 
@@ -519,26 +519,18 @@ impl Item {
         session: &Session,
     ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
         trace!("get_secret called on '{}'", self.label);
-        match &self.data {
-            Some(data) => Ok((
-                "".to_string(),
-                data.parameters.clone(),
-                match session.encrypt(&data.data) {
-                    Ok(data) => data,
-                    Err(e) => {
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            format!("Error encrypting secret: {}", e),
-                        ));
-                    }
-                },
-                data.content_type.clone(),
-            )),
-            None => Err(std::io::Error::new(
+        let data = self.data.as_ref().ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item is locked"))
+        })?;
+
+        let (iv, secret) = session.encrypt(&data.data).map_err(|e| {
+            error!("Error encrypting secret: {}", e);
+            std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Item is locked"),
-            )),
-        }
+                format!("Data cannot be prepared"),
+            )
+        })?;
+        Ok(("".to_string(), iv, secret, data.content_type.clone()))
     }
     pub fn set_secret(
         &mut self,
@@ -549,8 +541,7 @@ impl Item {
     ) -> Result<(), std::io::Error> {
         trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {
-            uuid: self.data_uuid.unwrap_or_else(|| Uuid::new_v4()),
-            parameters: parameters.clone(),
+            uuid: self.id.uuid,
             data: match session.decrypt(&parameters, value) {
                 Ok(data) => data,
                 Err(e) => {

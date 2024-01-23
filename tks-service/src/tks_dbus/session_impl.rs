@@ -1,25 +1,19 @@
 use crate::tks_dbus::fdo::session::OrgFreedesktopSecretSession;
-use crate::tks_dbus::DBusHandle;
+use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::CROSSROADS;
-use hmac::{Hmac, Mac, SimpleHmac};
-use hmac_sha256::HKDF;
+use crate::tks_dbus::{DBusHandle, DBusHandlePath};
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
-use num_bigint::RandBigInt;
-use num_bigint::{BigInt, BigUint, ToBigInt};
-use openssl::aes::{aes_ige, AesKey};
-use openssl::derive::Deriver;
+use openssl::bn::BigNum;
+use openssl::dh::Dh;
+use openssl::error::ErrorStack;
 use openssl::md::Md;
 use openssl::pkey::Id;
-use openssl::pkey::PKey;
-use openssl::pkey_ctx::PkeyCtx;
-use openssl::symm::{decrypt, Cipher};
-use ring::{agreement, rand};
-use sha2::{Digest, Sha256};
-use std::cmp::Ordering;
+use openssl::pkey_ctx::{HkdfMode, PkeyCtx};
+use openssl::symm::{decrypt, encrypt, Cipher};
+use std::error;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::{error, panic, ptr};
 use vec_map::VecMap;
 
 pub struct Session {
@@ -28,10 +22,9 @@ pub struct Session {
     aes_key_bytes: Option<Vec<u8>>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SessionHandle {
     id: usize,
-    pub encrypted_output: Option<EncryptedOutput>,
 }
 
 #[derive(Debug)]
@@ -45,23 +38,20 @@ impl OrgFreedesktopSecretSession for SessionHandle {
         CROSSROADS
             .lock()
             .unwrap()
-            .remove::<SessionHandle>(&self.path());
+            .remove::<SessionHandle>(&self.path().into());
         Ok(())
     }
 }
 
 impl DBusHandle for SessionHandle {
-    fn path(&self) -> dbus::Path<'static> {
-        format!("/org/freedesktop/secrets/session/{}", self.id).into()
+    fn path(&self) -> DBusHandlePath {
+        SinglePath(format!("/org/freedesktop/secrets/session/{}", self.id).into())
     }
 }
 
 impl Session {
     pub fn get_dbus_handle(&self) -> SessionHandle {
-        SessionHandle {
-            id: self.id,
-            encrypted_output: None,
-        }
+        SessionHandle { id: self.id }
     }
 }
 
@@ -73,6 +63,37 @@ pub struct SessionManager {
 lazy_static! {
     pub static ref SESSION_MANAGER: Arc<Mutex<SessionManager>> =
         Arc::new(Mutex::new(SessionManager::new()));
+}
+
+#[derive(Debug)]
+pub enum TksError {
+    ParameterError,
+    CryptoError,
+    IOError(std::io::Error),
+}
+
+impl std::fmt::Display for TksError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            TksError::ParameterError => write!(f, "Parameter error"),
+            TksError::CryptoError => write!(f, "Crypto error"),
+            TksError::IOError(e) => write!(f, "IO error: {}", e),
+        }
+    }
+}
+
+impl From<std::io::Error> for TksError {
+    fn from(e: std::io::Error) -> Self {
+        error!("io error: {:?}", e);
+        TksError::IOError(e)
+    }
+}
+
+impl From<ErrorStack> for TksError {
+    fn from(e: ErrorStack) -> Self {
+        error!("openssl error: {:?}", e);
+        TksError::CryptoError
+    }
 }
 
 impl SessionManager {
@@ -87,7 +108,7 @@ impl SessionManager {
         &mut self,
         algorithm: String,
         input: Option<&Vec<u8>>,
-    ) -> Result<(usize, Option<Vec<u8>>), Box<dyn error::Error>> {
+    ) -> Result<(usize, Option<Vec<u8>>), TksError> {
         trace!("Creating new session with algorithm {}", algorithm);
         let output;
         let sess_id = {
@@ -108,38 +129,14 @@ impl SessionManager {
 }
 
 impl DBusHandle for SessionManager {
-    fn path(&self) -> dbus::Path<'static> {
-        "/org/freedesktop/secrets/session".into()
+    fn path(&self) -> DBusHandlePath {
+        SinglePath("/org/freedesktop/secrets/session".into())
     }
 }
 
 const DH_AES: &'static str = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
-const X25519: &'static str = "x25519";
+// const X25519: &'static str = "x25519";
 const PLAIN: &'static str = "plain";
-
-// bigint implementation of DH_PRIME
-// const DH_PRIME: [u8; 128] = [
-//     0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xC9, 0x0F, 0xDA, 0xA2, 0x21, 0x68, 0xC2, 0x34,
-//     0xC4, 0xC6, 0x62, 0x8B, 0x80, 0xDC, 0x1C, 0xD1, 0x29, 0x02, 0x4E, 0x08, 0x8A, 0x67, 0xCC, 0x74,
-//     0x02, 0x0B, 0xBE, 0xA6, 0x3B, 0x13, 0x9B, 0x22, 0x51, 0x4A, 0x08, 0x79, 0x8E, 0x34, 0x04, 0xDD,
-//     0xEF, 0x95, 0x19, 0xB3, 0xCD, 0x3A, 0x43, 0x1B, 0x30, 0x2B, 0x0A, 0x6D, 0xF2, 0x5F, 0x14, 0x37,
-//     0x4F, 0xE1, 0x35, 0x6D, 0x6D, 0x51, 0xC2, 0x45, 0xE4, 0x85, 0xB5, 0x76, 0x62, 0x5E, 0x7E, 0xC6,
-//     0xF4, 0x4C, 0x42, 0xE9, 0xA6, 0x37, 0xED, 0x6B, 0x0B, 0xFF, 0x5C, 0xB6, 0xF4, 0x06, 0xB7, 0xED,
-//     0xEE, 0x38, 0x6B, 0xFB, 0x5A, 0x89, 0x9F, 0xA5, 0xAE, 0x9F, 0x24, 0x11, 0x7C, 0x4B, 0x1F, 0xE6,
-//     0x49, 0x28, 0x66, 0x51, 0xEC, 0xE6, 0x53, 0x81, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF,
-// ];
-
-enum TksError {
-    ParameterError,
-    CryptoError,
-    IOError(std::io::Error),
-}
-
-impl From<ring::error::Unspecified> for TksError {
-    fn from(_: ring::error::Unspecified) -> Self {
-        TksError::CryptoError
-    }
-}
 
 impl Session {
     pub fn new(id: usize, algorithm: String) -> Session {
@@ -163,52 +160,31 @@ impl Session {
                 }
             }
 
-            DH_AES =>
-            // bigint implementation of DH_AES
-            {
+            DH_AES => {
                 if let Some(input) = input {
-                    //     let mut rng = rand::thread_rng();
-                    //     let private_key = rng.gen_biguint(1024);
-                    //     let prime = BigUint::from_bytes_be(&DH_PRIME);
-                    //     let pub_key = BigUint::parse_bytes(b"2", 10)
-                    //         .unwrap()
-                    //         .modpow(&private_key, &prime);
-                    //
-                    //     let client_pub_key = BigUint::from_bytes_be(&input);
-                    //     let mut common_secret =
-                    //         client_pub_key.modpow(&private_key, &prime).to_bytes_be();
-                    //     let common_secret = match common_secret.len().cmp(&16) {
-                    //         Ordering::Less => {
-                    //             let mut x = vec![0u8; 128 - common_secret.len()];
-                    //             x.append(&mut common_secret);
-                    //             x
-                    //         }
-                    //         Ordering::Greater => {
-                    //             common_secret.truncate(128);
-                    //             common_secret
-                    //         }
-                    //         Ordering::Equal => common_secret,
-                    //     };
-                    //
-                    //     let salt: [u8; 32] = [0; 32];
-                    //     let iv: [u8; 1] = [0; 1];
-                    //     let mut secret_key: [u8; 16] = [0; 16];
-                    //     HKDF::expand(&mut secret_key, HKDF::extract(&salt, &common_secret), &iv);
-                    //     debug!("secret key: {:?}", secret_key);
-                    //     self.aes_key_bytes = Some(secret_key.into());
+                    let p = BigNum::get_rfc2409_prime_1024()?;
+                    let g = BigNum::from_u32(2u32)?;
+                    let dh = Dh::from_pqg(p, None, g)?;
+                    let priv_key = dh.generate_key()?;
+                    let pub_key = priv_key.public_key();
 
-                    let rng = rand::SystemRandom::new();
-                    let private_key =
-                        agreement::EphemeralPrivateKey::generate(&agreement::ECDH_P256, &rng)?;
-                    let public_key = private_key.compute_public_key()?;
-                    let peer_public_key =
-                        agreement::UnparsedPublicKey::new(&agreement::ECDH_P256, input);
-                    let shared_secret = agreement::agree_ephemeral(
-                        private_key,
-                        &peer_public_key,
-                        |_key_material| Ok(()),
-                    )?;
-                    Ok(Some(public_key.as_ref().to_vec()))
+                    let client_pub_key = BigNum::from_slice(input.as_slice())?;
+                    let shared_secret = priv_key.compute_key(&client_pub_key)?;
+                    debug!("shared secret: {:X?}", shared_secret.as_slice());
+
+                    let mut derive_key = PkeyCtx::new_id(Id::HKDF)?;
+                    derive_key.derive_init()?;
+                    derive_key.set_hkdf_mode(HkdfMode::EXTRACT_THEN_EXPAND)?;
+                    let salt: [u8; 32] = [0; 32];
+                    derive_key.set_hkdf_salt(&salt)?;
+                    derive_key.set_hkdf_md(Md::sha256())?;
+                    derive_key.set_hkdf_key(shared_secret.as_slice())?;
+                    let mut aes_bytes = vec![0u8; 128];
+                    derive_key.derive(Some(aes_bytes.as_mut_slice()))?;
+                    debug!("aes bytes: {:X?}", aes_bytes);
+                    self.aes_key_bytes = Some(aes_bytes[..16].to_owned());
+
+                    Ok(Some(pub_key.to_vec()))
                 } else {
                     Err(TksError::ParameterError)
                 }
@@ -243,33 +219,48 @@ impl Session {
             }
         }
     }
-    pub fn decrypt(&self, iv: &Vec<u8>, input: &Vec<u8>) -> Result<Vec<u8>, Box<dyn error::Error>> {
+    pub fn decrypt(&self, iv: &Vec<u8>, input: &Vec<u8>) -> Result<Vec<u8>, TksError> {
         trace!("Decrypting secret for session {}", self.id);
         match self.algorithm.as_str() {
             PLAIN => Ok(input.clone()),
-            DH_AES => {
-                // openssl decrypt
-                // if let Some(key) = self.aes_key_bytes.as_ref() {
-                //     let cipher = Cipher::aes_128_cbc();
-                //     Ok(decrypt(cipher, key, Some(iv), input)?)
-                // } else {
-                //     error!("No key");
-                //     Err("No key".into())
-                // }
-            }
+            DH_AES => self
+                .aes_key_bytes
+                .as_ref()
+                .ok_or_else(|| {
+                    error!("Cannot decrypt: No key");
+                    TksError::CryptoError
+                })
+                .map(|key| {
+                    decrypt(Cipher::aes_128_cbc(), key, Some(iv), input).map_err(|e| {
+                        error!("openssl error: {:?}", e);
+                        TksError::CryptoError
+                    })
+                })?,
             _ => {
                 error!("Unsupported algorithm: {}", self.algorithm);
-                Err("Unsupported algorithm".into())
+                Err(TksError::ParameterError)
             }
         }
     }
-    pub fn encrypt(&self, input: &Vec<u8>) -> Result<Vec<u8>, Box<dyn error::Error>> {
+    pub fn encrypt(&self, input: &Vec<u8>) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
         trace!("Encrypting secret for session {}", self.id);
         match self.algorithm.as_str() {
-            PLAIN => Ok(input.clone()),
+            PLAIN => Ok(([].to_vec(), input.clone())),
             DH_AES => {
-                error!("Unsupported algorithm: {}", self.algorithm);
-                Err("Unsupported algorithm".into())
+                let iv = rand::random::<[u8; 16]>().to_vec();
+                let padding_size = 16 - (input.len() % 16);
+                let mut input = input.clone();
+                input.append(&mut vec![padding_size as u8; padding_size]);
+
+                Ok((
+                    iv.clone(),
+                    encrypt(
+                        Cipher::aes_128_cbc(),
+                        &self.aes_key_bytes.as_ref().unwrap(),
+                        Some(&iv),
+                        &input,
+                    )?,
+                ))
             }
             _ => {
                 error!("Unsupported algorithm: {}", self.algorithm);

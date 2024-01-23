@@ -1,7 +1,8 @@
 use crate::tks_dbus::fdo::prompt::OrgFreedesktopSecretPrompt;
 use crate::tks_dbus::fdo::prompt::OrgFreedesktopSecretPromptCompleted;
-use crate::tks_dbus::DBusHandle;
+use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::MESSAGE_SENDER;
+use crate::tks_dbus::{DBusHandle, DBusHandlePath};
 use dbus;
 use dbus::arg;
 use dbus::message::SignalArgs;
@@ -28,6 +29,7 @@ pub trait Dialog {
     fn show(&self, text: &String) -> DialogResult;
 }
 
+#[derive(Debug, Clone)]
 pub struct PromptHandle {
     prompt_id: usize,
 }
@@ -72,12 +74,8 @@ impl PromptImpl {
 }
 
 impl DBusHandle for PromptHandle {
-    fn path(&self) -> dbus::Path<'static> {
-        dbus::Path::new(format!(
-            "/org/freedesktop/secrets/prompt/{}",
-            self.prompt_id
-        ))
-        .unwrap()
+    fn path(&self) -> DBusHandlePath {
+        SinglePath(format!("/org/freedesktop/secrets/prompt/{}", self.prompt_id).into())
     }
 }
 
@@ -131,7 +129,7 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
                     dismissed,
                     result: arg::Variant(Box::new((false, "".to_string()))),
                 }
-                .to_emit_message(&prompt_path),
+                .to_emit_message(&prompt_path.into()),
             );
         });
         Ok(())

@@ -15,7 +15,7 @@ use dbus::*;
 use dbus_tokio::connection;
 use futures::future;
 use lazy_static::lazy_static;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -26,8 +26,37 @@ lazy_static! {
         Arc::new(Mutex::new(MessageSender::new()));
 }
 
+#[derive(Clone)]
+pub enum DBusHandlePath {
+    SinglePath(Path<'static>),
+    MultiplePaths(Vec<Path<'static>>),
+}
+
+impl From<DBusHandlePath> for dbus::Path<'static> {
+    fn from(p: DBusHandlePath) -> Self {
+        match p {
+            DBusHandlePath::SinglePath(p) => p,
+            DBusHandlePath::MultiplePaths(v) => {
+                warn!("This is a DBusPath having multiple paths, returning the first one: {}", v[0]);
+                v[0].clone()
+            }
+        }
+    }
+}
+
 pub trait DBusHandle {
-    fn path(&self) -> dbus::Path<'static>;
+    fn path(&self) -> DBusHandlePath;
+}
+
+// https://dbus.freedesktop.org/doc/dbus-specification.html#message-protocol-marshaling-object-path
+fn sanitize_string(s: &str) -> String {
+    assert!(!s.is_empty());
+    s.chars()
+        .map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '_' => c,
+            _ => '_',
+        })
+        .collect()
 }
 
 pub struct MessageSender {
@@ -58,14 +87,24 @@ impl MessageSender {
 macro_rules! register_object {
     ($iface:expr, $f:expr) => {
         tokio::spawn(async move {
-            let p = $f.path().to_string();
-            debug!("Registering {}", p);
             {
                 let mut cr_lock = CROSSROADS.lock().unwrap();
                 let itf = $iface(&mut cr_lock);
-                cr_lock.insert($f.path(), &[itf], $f);
+                match $f.path() {
+                    DBusHandlePath::SinglePath(p) => {
+                        let p = p.to_string();
+                        debug!("Registering {}", p);
+                        cr_lock.insert(p, &[itf], $f);
+                    }
+                    DBusHandlePath::MultiplePaths(paths) => {
+                        for p in paths {
+                            let ps = p.to_string();
+                            debug!("Registering {}", ps);
+                            cr_lock.insert(p, &[itf], $f.clone());
+                        }
+                    }
+                }
             }
-            debug!("Registered {}", p);
         });
     };
 }
@@ -119,7 +158,9 @@ pub async fn start_server() {
         trace!("Registering org.freedesktop.Secret.Service");
         let mut crossroads = CROSSROADS.lock().unwrap();
         let itf = register_org_freedesktop_secret_service(&mut crossroads);
-        crossroads.insert("/org/freedesktop/secrets", &[itf], ServiceImpl::new());
+        let service = ServiceImpl::new();
+        crossroads.insert("/org/freedesktop/secrets", &[itf], service);
+        ServiceImpl::register_collections().unwrap();
     }
 
     let nr = c

@@ -2,8 +2,8 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
-use crate::tks_dbus::DBusHandle;
-use crate::tks_dbus::MESSAGE_SENDER;
+use crate::tks_dbus::{sanitize_string, DBusHandle};
+use crate::tks_dbus::{DBusHandlePath, MESSAGE_SENDER};
 use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, trace};
@@ -11,42 +11,21 @@ use std::collections::HashMap;
 extern crate pretty_env_logger;
 use crate::convert_prop_map;
 use crate::register_object;
-use crate::tks_dbus::collection_impl::{CollectionHandle, CollectionImpl};
+use crate::tks_dbus::collection_impl::CollectionHandle;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
 use crate::tks_dbus::session_impl::SessionHandle;
 use crate::tks_dbus::CROSSROADS;
 
+use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
 
 pub struct ServiceHandle {}
 pub struct ServiceImpl {}
 
-impl ServiceImpl {
-    pub fn new() -> ServiceImpl {
-        if let Ok(paths) = ServiceImpl::collections_and_paths() {
-            paths.iter().for_each(|p| {
-                let coll_handle = CollectionHandle {
-                    alias: p.0.clone(),
-                    path: Some(p.1.clone()),
-                };
-                register_object!(
-                    register_org_freedesktop_secret_collection::<CollectionHandle>,
-                    coll_handle
-                );
-            });
-        } else {
-            error!("Error received while attempting to read get stored collections. Service may not by able to operate.");
-        }
-        ServiceImpl {}
-    }
-    pub fn get_dbus_handle(&self) -> ServiceHandle {
-        ServiceHandle {}
-    }
-}
 impl DBusHandle for ServiceHandle {
-    fn path(&self) -> dbus::Path<'static> {
-        "/org/freedesktop/secrets".to_string().into()
+    fn path(&self) -> DBusHandlePath {
+        SinglePath("/org/freedesktop/secrets".to_string().into())
     }
 }
 
@@ -66,9 +45,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         let mut sm = SESSION_MANAGER.lock().unwrap();
         sm.new_session(algorithm, arg::cast(&input.0))
             .or_else(|e| {
-                error!("Error creating session: {}", e);
+                error!("Error creating session: {:?}", e);
                 Err(dbus::MethodErr::failed(&format!(
-                    "Error creating session: {}",
+                    "Error creating session: {:?}",
                     e
                 )))
             })
@@ -83,7 +62,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     register_object!(register_org_freedesktop_secret_session::<SessionHandle>, dh);
                     path
                 };
-                Ok((output, path))
+                Ok((output, path.into()))
             })
     }
 
@@ -101,7 +80,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
 
         match alias.as_str() {
             "default" => {
-                // TODO: should we emit the CollectionCreated signal here?
+                // no CollectionCreated signal is emitted for the default collection as it is already there
                 return Ok((
                     dbus::Path::from("/org/freedesktop/secrets/collection/default"),
                     dbus::Path::from("/"),
@@ -125,25 +104,25 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .lock()
             .unwrap()
             .create_collection(&label, &alias, &string_props)
-            .and_then(|()| {
-                let coll = CollectionImpl::new(&label);
-                let collection_path = coll.get_dbus_handle().path();
+            .and_then(|uuid| {
+                let coll = CollectionHandle::from(&uuid);
+                let collection_path = coll.path();
                 register_object!(
                     register_org_freedesktop_secret_collection::<CollectionHandle>,
-                    coll.get_dbus_handle()
+                    coll
                 );
                 let collection_path_clone = collection_path.clone();
                 tokio::spawn(async move {
                     debug!("Sending CollectionCreated signal");
                     MESSAGE_SENDER.lock().unwrap().send_message(
                         OrgFreedesktopSecretServiceCollectionCreated {
-                            collection: collection_path_clone.clone(),
+                            collection: collection_path_clone.clone().into(),
                         }
-                        .to_emit_message(&collection_path_clone),
+                        .to_emit_message(&collection_path_clone.into()),
                     );
                 });
                 let prompt_path = dbus::Path::from("/");
-                Ok((collection_path, prompt_path))
+                Ok((collection_path.into(), prompt_path))
             })
             .map_err(|e| {
                 error!("Error creating collection: {}", e);
@@ -166,21 +145,16 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     .collections
                     .iter()
                     .filter(|c| c.locked == $locked)
-                    .filter(|c| c.items.is_some())
                     .for_each(|c| {
-                        $vec.extend(
-                            c.items
-                                .as_ref()
-                                .unwrap()
-                                .iter()
-                                .filter(|i| i.attributes == attributes)
-                                .map(|i| {
-                                    dbus::Path::from(format!(
-                                        "/org/freedesktop/secrets/collection/{}/{}",
-                                        c.name, i.label
-                                    ))
-                                }),
-                        );
+                        $vec.extend(c.items.iter().filter(|i| i.attributes == attributes).map(
+                            |i| {
+                                dbus::Path::from(format!(
+                                    "/org/freedesktop/secrets/collection/{}/{}",
+                                    sanitize_string(&c.name),
+                                    sanitize_string(&i.label)
+                                ))
+                            },
+                        ));
                     })
             };
         }
@@ -195,6 +169,8 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("unlock {:?}", objects);
+        // TODO: logic with aliases is not correct here; we should instead get paths one by one and
+        // compose the unlocked and locked vectors from each step
         let collection_names = objects
             .iter()
             .map(|p| p.to_string())
@@ -206,7 +182,15 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .unwrap()
             .collections
             .iter_mut()
-            .filter(|c| collection_names.contains(&c.name))
+            .filter(|c| {
+                collection_names.contains(&c.name)
+                    || (c.aliases.as_ref().map_or(false, |aliases| {
+                        aliases
+                            .iter()
+                            .find_map(|n| Some(collection_names.contains(n)))
+                            .unwrap()
+                    }))
+            })
             .for_each(|c| {
                 let _ = c
                     .unlock()
@@ -227,6 +211,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompt);
         Ok((unlocked, prompt))
     }
+
     fn lock(
         &mut self,
         objects: Vec<dbus::Path<'static>>,
@@ -245,13 +230,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .iter_mut()
             .filter(|c| collection_names.contains(&c.name))
             .for_each(|c| {
-                if c.lock().unwrap_or(false) {
-                    let path = dbus::Path::from(format!(
-                        "/org/freedesktop/secrets/collection/{}",
-                        c.name.clone()
-                    ));
-                    locked.push(path);
-                }
+                let _ = c.lock();
+                let path = dbus::Path::from(format!(
+                    "/org/freedesktop/secrets/collection/{}",
+                    sanitize_string(&c.name.clone())
+                ));
+                locked.push(path);
             });
         Ok((locked, dbus::Path::from("/")))
     }
@@ -276,60 +260,33 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                 error!("Invalid session ID");
                 dbus::MethodErr::failed(&"Invalid session ID")
             })?;
-        let sm = SESSION_MANAGER.lock().unwrap();
-        let session = sm.sessions.get(session_id).ok_or_else(|| {
-            error!("Session {} not found", session_id);
-            dbus::MethodErr::failed(&"Session not found")
-        })?;
+        SESSION_MANAGER
+            .lock()
+            .unwrap()
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| {
+                error!("Session {} not found", session_id);
+                dbus::MethodErr::failed(&"Session not found")
+            })?;
         type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
-        let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
-        items
-            .iter()
-            .map(|p| {
-                (
-                    p,
-                    p.to_string()
-                        .split('/')
-                        .map(|s| s.to_string())
-                        .collect::<Vec<String>>(),
-                )
-            })
-            .filter(|p| p.1.len() == 7)
-            .for_each(|p| {
-                let coll = p.1.get(5).unwrap().clone();
-                let item = p.1.get(6).unwrap().clone();
-                let _ = STORAGE
-                    .lock()
-                    .unwrap()
-                    .with_item(&coll, &item, |i| i.get_secret(session))
-                    .map(|s| {
-                        secrets_map.insert(p.0.clone(), (dbus::Path::from(s.0), s.1, s.2, s.3));
-                    });
-            });
+        let secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
+        // TODO as so: iterate over the paths, from each path use DBusHandle::from to grab the
+        // corresponding handle, then from that handle go read the secret
         Ok(secrets_map)
     }
 
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         trace!("read_alias {}", name);
-        match name.as_str() {
-            "default" => STORAGE
-                .lock()
-                .unwrap()
-                .read_alias(&name)
-                .map(|name| {
-                    dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", name))
-                })
-                .map_err(|e| {
-                    error!("Error reading alias: {}", e);
-                    dbus::MethodErr::failed(&format!("Error reading alias: {}", e))
-                }),
-            x => {
-                return Err(dbus::MethodErr::failed(&format!(
-                    "Alias not recognized: '{}'",
-                    x
-                )));
-            }
-        }
+        Ok(STORAGE.lock().unwrap().read_alias(&name).map_or_else(
+            |_| dbus::Path::from("/"),
+            |name| {
+                dbus::Path::from(format!(
+                    "/org/freedesktop/secrets/collection/{}",
+                    sanitize_string(&name)
+                ))
+            },
+        ))
     }
     fn set_alias(
         &mut self,
@@ -344,20 +301,26 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
-        let (_, paths): (Vec<String>, Vec<dbus::Path>) = ServiceImpl::collections_and_paths()
+        let cols = CollectionHandle::collections()
             .map_err(|e| {
                 error!("Error getting collections: {}", e);
-                dbus::MethodErr::failed(&format!("Error getting collections: {}", e))
+                dbus::MethodErr::failed(&format!("Error getting collections"))
             })?
             .iter()
-            .cloned()
-            .unzip();
-        Ok(paths)
+            .map(|c| c.path().into())
+            .collect::<Vec<dbus::Path<'static>>>();
+        Ok(cols)
     }
 }
 
 impl ServiceImpl {
-    fn collections_and_paths() -> Result<Vec<(String, dbus::Path<'static>)>, std::io::Error> {
+    pub fn new() -> ServiceImpl {
+        ServiceImpl {}
+    }
+    pub fn get_dbus_handle(&self) -> ServiceHandle {
+        ServiceHandle {}
+    }
+    pub fn register_collections() -> Result<(), std::io::Error> {
         let collections = &STORAGE
             .lock()
             .map_err(|e| {
@@ -367,29 +330,10 @@ impl ServiceImpl {
                 )
             })?
             .collections;
-        Ok(collections
-            .into_iter()
-            .flat_map(|c| {
-                let mut paths: Vec<(String, dbus::Path)> = Vec::new();
-                let empty: Vec<String> = Vec::new();
-                paths.push((
-                    c.name.clone(),
-                    dbus::Path::from(format!("/org/freedesktop/secrets/collection/{}", c.name)),
-                ));
-                paths.extend(
-                    c.aliases
-                        .as_ref()
-                        .unwrap_or_else(|| &empty)
-                        .iter()
-                        .map(|s| {
-                            (
-                                c.name.clone(),
-                                dbus::Path::from(format!("/org/freedesktop/secrets/aliases/{}", s)),
-                            )
-                        }),
-                );
-                paths
-            })
-            .collect())
+        collections.iter().for_each(|c| {
+            // constructing the CollectionHandle will register the collection
+            let _ = CollectionHandle::from(c);
+        });
+        Ok(())
     }
 }
