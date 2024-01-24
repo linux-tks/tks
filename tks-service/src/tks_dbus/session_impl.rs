@@ -248,9 +248,7 @@ impl Session {
             PLAIN => Ok(([].to_vec(), input.clone())),
             DH_AES => {
                 let iv = rand::random::<[u8; 16]>().to_vec();
-                let padding_size = 16 - (input.len() % 16);
-                let mut input = input.clone();
-                input.append(&mut vec![padding_size as u8; padding_size]);
+                let input = input.clone();
 
                 Ok((
                     iv.clone(),

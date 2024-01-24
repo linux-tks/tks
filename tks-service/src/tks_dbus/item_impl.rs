@@ -7,19 +7,19 @@ use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemChanged;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemDeleted;
 use crate::tks_dbus::fdo::item::register_org_freedesktop_secret_item;
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
-use crate::tks_dbus::{DBusHandlePath, sanitize_string};
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
+use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
+use crate::tks_dbus::{sanitize_string, DBusHandlePath};
 use dbus::message::SignalArgs;
 use lazy_static::lazy_static;
-use log::{debug, trace};
 use log::error;
+use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-use crate::tks_dbus::DBusHandlePath::{SinglePath};
 
 #[derive(Debug, Clone)]
 pub struct ItemHandle {
@@ -145,41 +145,31 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         &mut self,
         session: dbus::Path<'static>,
     ) -> Result<(dbus::Path<'static>, Vec<u8>, Vec<u8>, String), dbus::MethodErr> {
-        let session_id = match session.split('/').last().unwrap().parse::<usize>() {
-            Ok(id) => id,
-            Err(_) => {
+        if self.locked()? {
+            return Err(dbus::MethodErr::failed(&"Item is locked"));
+        }
+        let session_id = session
+            .split('/')
+            .last()
+            .unwrap()
+            .parse::<usize>()
+            .map_err(|_| {
                 error!("Invalid session ID");
-                return Err(dbus::MethodErr::failed(&"Invalid session ID"));
-            }
-        };
-        match self.locked() {
-            Ok(true) => return Err(dbus::MethodErr::failed(&"Item is locked")),
-            Err(_) => return Err(dbus::MethodErr::failed(&"Item not found")),
-            Ok(false) => {}
-        }
+                dbus::MethodErr::failed(&"Invalid session ID")
+            })?;
         let sm = SESSION_MANAGER.lock().unwrap();
-        let s = match sm.sessions.get(session_id) {
-            Some(s) => s,
-            None => {
-                error!("Session {} not found", session_id);
-                return Err(dbus::MethodErr::failed(&"Session not found"));
-            }
-        };
-        match self.locked() {
-            Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
-            Ok(false) => match STORAGE.lock().unwrap().with_item(
-                &self.item_id.collection_uuid,
-                &self.item_id.uuid,
-                |item| {
-                    let s = item.get_secret(s)?;
-                    Ok((dbus::Path::from(s.0), s.1, s.2, s.3.clone()))
-                },
-            ) {
-                Ok(result) => Ok(result),
-                Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
-            },
-            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
-        }
+        let s = sm.sessions.get(session_id).ok_or_else(|| {
+            error!("Session {} not found", session_id);
+            dbus::MethodErr::failed(&"Session not found")
+        })?;
+        STORAGE
+            .lock()
+            .unwrap()
+            .with_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
+                let s = item.get_secret(s)?;
+                Ok((session, s.1, s.2, s.3.clone()))
+            })
+            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
     }
     fn set_secret(
         &mut self,
@@ -207,7 +197,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         })?;
 
         match STORAGE.lock().unwrap().modify_item(
-            self.item_id.collection_uuid.to_string().as_str(),
+            &self.item_id.collection_uuid,
             &self.item_id.uuid,
             |item| item.set_secret(&s, secret.1, &secret.2, secret.3),
         ) {
@@ -234,7 +224,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
             .collections
             .iter()
             .find(|c| c.uuid == self.item_id.collection_uuid)
-            .unwrap()
+            .ok_or_else(|| dbus::MethodErr::failed("Item not found"))?
             .locked;
         Ok(b)
     }
@@ -252,15 +242,18 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         &self,
         value: ::std::collections::HashMap<String, String>,
     ) -> Result<(), dbus::MethodErr> {
-        match STORAGE.lock().unwrap().modify_item(
-            self.item_id.collection_uuid.to_string().as_str(),
-            &self.item_id.uuid,
-            |item| {
-                item.attributes = value;
-                Ok(())
-            },
-        ) {
-            Ok(_) => {
+        STORAGE
+            .lock()
+            .unwrap()
+            .modify_item(
+                &self.item_id.collection_uuid,
+                &self.item_id.uuid,
+                |item| {
+                    item.attributes = value;
+                    Ok(())
+                },
+            )
+            .and_then(|_|{
                 let item_path_clone = self.path().clone();
                 tokio::spawn(async move {
                     debug!("Sending ItemChanged signal");
@@ -272,25 +265,22 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                     );
                 });
                 Ok(())
-            }
-            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
-        }
+            })
+            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
     }
     fn label(&self) -> Result<String, dbus::MethodErr> {
         STORAGE
             .lock()
             .unwrap()
-            .with_item(
-                &self.item_id.collection_uuid,
-                &self.item_id.uuid,
-                |item| Ok(item.label.clone()),
-            )
+            .with_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
+                Ok(item.label.clone())
+            })
             .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
     }
 
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {
         match STORAGE.lock().unwrap().modify_item(
-            self.item_id.collection_uuid.to_string().as_str(),
+            &self.item_id.collection_uuid,
             &self.item_id.uuid,
             |item| {
                 item.label = value;
@@ -339,7 +329,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
         match self.locked() {
             Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
             Ok(false) => match STORAGE.lock().unwrap().modify_item(
-                self.item_id.collection_uuid.to_string().as_str(),
+                &self.item_id.collection_uuid,
                 &self.item_id.uuid,
                 |item| {
                     item.data.as_mut().unwrap().content_type = value;
@@ -354,7 +344,8 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                             OrgFreedesktopSecretCollectionItemChanged {
                                 item: item_path_clone.clone().into(),
                             }
-                            .to_emit_message(&item_path_clone.into()).into(),
+                            .to_emit_message(&item_path_clone.into())
+                            .into(),
                         );
                     });
                     Ok(())

@@ -12,6 +12,7 @@ extern crate pretty_env_logger;
 use crate::convert_prop_map;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionHandle;
+use crate::tks_dbus::item_impl::ItemHandle;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
 use crate::tks_dbus::session_impl::SessionHandle;
@@ -19,6 +20,7 @@ use crate::tks_dbus::CROSSROADS;
 
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
+use DBusHandlePath::MultiplePaths;
 
 pub struct ServiceHandle {}
 pub struct ServiceImpl {}
@@ -148,11 +150,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     .for_each(|c| {
                         $vec.extend(c.items.iter().filter(|i| i.attributes == attributes).map(
                             |i| {
-                                dbus::Path::from(format!(
-                                    "/org/freedesktop/secrets/collection/{}/{}",
-                                    sanitize_string(&c.name),
-                                    sanitize_string(&i.label)
-                                ))
+                                ItemHandle::from(i).into()
                             },
                         ));
                     })
@@ -231,11 +229,10 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .filter(|c| collection_names.contains(&c.name))
             .for_each(|c| {
                 let _ = c.lock();
-                let path = dbus::Path::from(format!(
-                    "/org/freedesktop/secrets/collection/{}",
-                    sanitize_string(&c.name.clone())
-                ));
-                locked.push(path);
+                match CollectionHandle::from(&*c).path() {
+                    SinglePath(p) => locked.push(p),
+                    MultiplePaths(mut paths) => locked.append(&mut paths),
+                }
             });
         Ok((locked, dbus::Path::from("/")))
     }

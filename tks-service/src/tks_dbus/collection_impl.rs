@@ -63,7 +63,20 @@ impl CollectionHandle {
 
 impl From<&Collection> for CollectionHandle {
     fn from(collection: &Collection) -> CollectionHandle {
-        CollectionHandle::from(&collection.uuid)
+        let uuid = collection.uuid;
+        let is_new = !COLLECTION_HANDLES.lock().unwrap().contains_key(&uuid);
+        is_new.then(|| {
+            COLLECTION_HANDLES
+                .lock()
+                .unwrap()
+                .insert(uuid.clone(), CollectionHandle::new(&uuid, collection.default));
+        });
+        COLLECTION_HANDLES
+            .lock()
+            .unwrap()
+            .get(&uuid)
+            .unwrap()
+            .clone()
     }
 }
 

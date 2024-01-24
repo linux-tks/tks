@@ -1,6 +1,6 @@
 use crate::tks_dbus::session_impl::Session;
 use lazy_static::lazy_static;
-use log::{debug, error, trace};
+use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::{OsStr, OsString};
@@ -112,7 +112,7 @@ impl Storage {
 
             // look for the default collection and create it if it doesn't exist
             let _ = storage.read_alias("default").or_else(|_| {
-                error!("Creating default collection");
+                info!("Creating default collection");
                 storage
                     .create_collection(DEFAULT_NAME, DEFAULT_NAME, &HashMap::new())
                     .map(|_| "default".to_string())
@@ -211,7 +211,7 @@ impl Storage {
 
     pub fn modify_item<F, T>(
         &mut self,
-        collection_alias: &str,
+        collection_uuid: &Uuid,
         item_uuid: &Uuid,
         f: F,
     ) -> Result<T, std::io::Error>
@@ -221,11 +221,14 @@ impl Storage {
         let collection = self
             .collections
             .iter_mut()
-            .find(|c| c.name == collection_alias)
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Collection '{}' not found", collection_alias),
-            ))?;
+            .find(|c| c.uuid == *collection_uuid)
+            .ok_or_else(|| {
+                error!("Collection not found: {}", collection_uuid);
+                std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("Collection not found"),
+                )
+            })?;
         let mut item = collection
             .items
             .iter_mut()
