@@ -22,32 +22,19 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 #[derive(Debug, Clone)]
-pub struct ItemHandle {
+pub struct ItemImpl {
     item_id: ItemId,
     path: dbus::Path<'static>,
 }
 
-pub struct ItemImpl<'a> {
-    handle: &'a ItemHandle,
-}
-
-impl ItemImpl<'_> {
-    pub fn new(handle: &ItemHandle) -> ItemImpl {
-        ItemImpl { handle }
-    }
-    pub fn get_dbus_handle(&self) -> ItemHandle {
-        (*self.handle).clone()
-    }
-}
-
 lazy_static! {
-    pub static ref ITEM_HANDLES: Arc<Mutex<HashMap<Uuid, ItemHandle>>> =
+    pub static ref ITEM_HANDLES: Arc<Mutex<HashMap<Uuid, ItemImpl >>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
-impl ItemHandle {
+impl ItemImpl {
     fn new(item_id: &ItemId) -> Self {
-        let handle = ItemHandle {
+        let handle = ItemImpl {
             path: format!(
                 "/org/freedesktop/secrets/collection/{}/{}",
                 sanitize_string(&item_id.collection_uuid.to_string()),
@@ -66,17 +53,17 @@ impl ItemHandle {
     }
 }
 
-impl From<&Item> for ItemHandle {
+impl From<&Item> for ItemImpl {
     fn from(item: &Item) -> Self {
-        ItemHandle::from(&item.id)
+        ItemImpl::from(&item.id)
     }
 }
 
-impl From<&ItemId> for ItemHandle {
+impl From<&ItemId> for ItemImpl {
     fn from(item_id: &ItemId) -> Self {
         let is_new = !ITEM_HANDLES.lock().unwrap().contains_key(&item_id.uuid);
         is_new.then(|| {
-            let item_handle = ItemHandle::new(&item_id);
+            let item_handle = ItemImpl::new(&item_id);
             ITEM_HANDLES
                 .lock()
                 .unwrap()
@@ -91,25 +78,19 @@ impl From<&ItemId> for ItemHandle {
     }
 }
 
-impl From<&ItemImpl<'_>> for ItemHandle {
-    fn from(item_impl: &ItemImpl) -> Self {
-        (*item_impl.handle).clone()
-    }
-}
-
-impl DBusHandle for ItemHandle {
+impl DBusHandle for ItemImpl {
     fn path(&self) -> DBusHandlePath {
         SinglePath(self.path.clone())
     }
 }
 
-impl From<ItemHandle> for dbus::Path<'static> {
-    fn from(handle: ItemHandle) -> Self {
+impl From<ItemImpl> for dbus::Path<'static> {
+    fn from(handle: ItemImpl) -> Self {
         handle.path().into()
     }
 }
 
-impl OrgFreedesktopSecretItem for ItemHandle {
+impl OrgFreedesktopSecretItem for ItemImpl {
     fn delete(&mut self) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         match STORAGE
             .lock()
@@ -123,7 +104,7 @@ impl OrgFreedesktopSecretItem for ItemHandle {
                 tokio::spawn(async move {
                     trace!("Unregistering Item");
                     ITEM_HANDLES.lock().unwrap().remove(&uuid);
-                    CROSSROADS.lock().unwrap().remove::<ItemHandle>(&path);
+                    CROSSROADS.lock().unwrap().remove::<ItemImpl>(&path);
                 });
                 let item_path_clone = self.path().clone();
                 tokio::spawn(async move {

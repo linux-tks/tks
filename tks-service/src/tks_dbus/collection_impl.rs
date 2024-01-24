@@ -5,7 +5,7 @@ use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
 use crate::tks_dbus::fdo::prompt::register_org_freedesktop_secret_prompt;
-use crate::tks_dbus::item_impl::ItemHandle;
+use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::prompt_impl::PromptHandle;
 use crate::tks_dbus::prompt_impl::PromptImpl;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
@@ -27,20 +27,20 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone)]
-pub struct CollectionHandle {
+pub struct CollectionImpl {
     pub uuid: Uuid,
     pub default: bool,
     pub paths: Vec<dbus::Path<'static>>,
 }
 
 lazy_static! {
-    pub static ref COLLECTION_HANDLES: Arc<Mutex<HashMap<Uuid, CollectionHandle>>> =
+    pub static ref COLLECTION_HANDLES: Arc<Mutex<HashMap<Uuid, CollectionImpl >>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
-impl CollectionHandle {
-    fn new(uuid: &Uuid, default: bool) -> CollectionHandle {
-        let mut handle = CollectionHandle {
+impl CollectionImpl {
+    fn new(uuid: &Uuid, default: bool) -> CollectionImpl {
+        let mut handle = CollectionImpl {
             uuid: uuid.clone(),
             default,
             paths: vec![dbus::Path::from(format!(
@@ -61,15 +61,15 @@ impl CollectionHandle {
     }
 }
 
-impl From<&Collection> for CollectionHandle {
-    fn from(collection: &Collection) -> CollectionHandle {
+impl From<&Collection> for CollectionImpl {
+    fn from(collection: &Collection) -> CollectionImpl {
         let uuid = collection.uuid;
         let is_new = !COLLECTION_HANDLES.lock().unwrap().contains_key(&uuid);
         is_new.then(|| {
             COLLECTION_HANDLES
                 .lock()
                 .unwrap()
-                .insert(uuid.clone(), CollectionHandle::new(&uuid, collection.default));
+                .insert(uuid.clone(), CollectionImpl::new(&uuid, collection.default));
         });
         COLLECTION_HANDLES
             .lock()
@@ -80,14 +80,14 @@ impl From<&Collection> for CollectionHandle {
     }
 }
 
-impl From<&Uuid> for CollectionHandle {
-    fn from(uuid: &Uuid) -> CollectionHandle {
+impl From<&Uuid> for CollectionImpl {
+    fn from(uuid: &Uuid) -> CollectionImpl {
         let is_new = !COLLECTION_HANDLES.lock().unwrap().contains_key(&uuid);
         is_new.then(|| {
             COLLECTION_HANDLES
                 .lock()
                 .unwrap()
-                .insert(uuid.clone(), CollectionHandle::new(uuid, false));
+                .insert(uuid.clone(), CollectionImpl::new(uuid, false));
         });
         COLLECTION_HANDLES
             .lock()
@@ -98,14 +98,14 @@ impl From<&Uuid> for CollectionHandle {
     }
 }
 
-impl DBusHandle for CollectionHandle {
+impl DBusHandle for CollectionImpl {
     fn path(&self) -> DBusHandlePath {
         warn!("CollectionHandle::path() called");
         MultiplePaths(self.paths.clone())
     }
 }
 
-impl OrgFreedesktopSecretCollection for CollectionHandle {
+impl OrgFreedesktopSecretCollection for CollectionImpl {
     fn delete(&mut self) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         debug!("delete called on '{}'", self.uuid);
         // TODO: implement this when prompts are implemented
@@ -123,7 +123,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                     .items
                     .iter()
                     .filter(|item| item.attributes == attributes)
-                    .map(|item| ItemHandle::from(item).path().into())
+                    .map(|item| ItemImpl::from(item).path().into())
                     .collect::<Vec<dbus::Path>>())
             })
             .map_err(|e| {
@@ -206,7 +206,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                                 |collection| -> Result<(), std::io::Error> {
                                     collection.unlock()?;
                                     trace!("Creating item after collection unlock");
-                                    CollectionHandle::create_item(
+                                    CollectionImpl::create_item(
                                         self_clone.uuid.clone(),
                                         secret.clone(),
                                         replace,
@@ -237,7 +237,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
             error!("Unexpected error occured");
             return Err(dbus::MethodErr::failed(&"Not found"));
         }
-        CollectionHandle::create_item(
+        CollectionImpl::create_item(
             self.uuid,
             secret,
             replace,
@@ -259,7 +259,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
                     .items
                     .iter()
                     .map(|item| {
-                        let ref ih = ItemHandle::from(item);
+                        let ref ih = ItemImpl::from(item);
                         ih.path().into()
                     })
                     .collect::<Vec<dbus::Path>>())
@@ -330,7 +330,7 @@ impl OrgFreedesktopSecretCollection for CollectionHandle {
     }
 }
 
-impl CollectionHandle {
+impl CollectionImpl {
     fn create_item(
         collection_uuid: Uuid,
         secret: (dbus::Path, Vec<u8>, Vec<u8>, String),
@@ -363,7 +363,7 @@ impl CollectionHandle {
             })
             .and_then(|item_id| {
                 debug!("Item created: {}", item_id.uuid);
-                let item_path = ItemHandle::from(&item_id).path();
+                let item_path = ItemImpl::from(&item_id).path();
                 let item_path_clone = item_path.clone();
                 tokio::spawn(async move {
                     debug!("Sending ItemCreated signal");
@@ -378,7 +378,7 @@ impl CollectionHandle {
             })
     }
 
-    pub fn collections() -> Result<Vec<CollectionHandle>, std::io::Error> {
+    pub fn collections() -> Result<Vec<CollectionImpl>, std::io::Error> {
         Ok(COLLECTION_HANDLES
             .lock()
             .unwrap()

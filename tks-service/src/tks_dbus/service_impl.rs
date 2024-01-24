@@ -11,11 +11,11 @@ use std::collections::HashMap;
 extern crate pretty_env_logger;
 use crate::convert_prop_map;
 use crate::register_object;
-use crate::tks_dbus::collection_impl::CollectionHandle;
-use crate::tks_dbus::item_impl::ItemHandle;
+use crate::tks_dbus::collection_impl::CollectionImpl;
+use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
-use crate::tks_dbus::session_impl::SessionHandle;
+use crate::tks_dbus::session_impl::SessionImpl;
 use crate::tks_dbus::CROSSROADS;
 
 use crate::tks_dbus::DBusHandlePath::SinglePath;
@@ -61,7 +61,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                 let path = {
                     let dh = sm.sessions.get(sess_id).unwrap().get_dbus_handle();
                     let path = dh.path();
-                    register_object!(register_org_freedesktop_secret_session::<SessionHandle>, dh);
+                    register_object!(register_org_freedesktop_secret_session::<SessionImpl>, dh);
                     path
                 };
                 Ok((output, path.into()))
@@ -107,10 +107,10 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .unwrap()
             .create_collection(&label, &alias, &string_props)
             .and_then(|uuid| {
-                let coll = CollectionHandle::from(&uuid);
+                let coll = CollectionImpl::from(&uuid);
                 let collection_path = coll.path();
                 register_object!(
-                    register_org_freedesktop_secret_collection::<CollectionHandle>,
+                    register_org_freedesktop_secret_collection::<CollectionImpl>,
                     coll
                 );
                 let collection_path_clone = collection_path.clone();
@@ -150,7 +150,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     .for_each(|c| {
                         $vec.extend(c.items.iter().filter(|i| i.attributes == attributes).map(
                             |i| {
-                                ItemHandle::from(i).into()
+                                ItemImpl::from(i).into()
                             },
                         ));
                     })
@@ -229,7 +229,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .filter(|c| collection_names.contains(&c.name))
             .for_each(|c| {
                 let _ = c.lock();
-                match CollectionHandle::from(&*c).path() {
+                match CollectionImpl::from(&*c).path() {
                     SinglePath(p) => locked.push(p),
                     MultiplePaths(mut paths) => locked.append(&mut paths),
                 }
@@ -298,7 +298,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
-        let cols = CollectionHandle::collections()
+        let cols = CollectionImpl::collections()
             .map_err(|e| {
                 error!("Error getting collections: {}", e);
                 dbus::MethodErr::failed(&format!("Error getting collections"))
@@ -329,7 +329,7 @@ impl ServiceImpl {
             .collections;
         collections.iter().for_each(|c| {
             // constructing the CollectionHandle will register the collection
-            let _ = CollectionHandle::from(c);
+            let _ = CollectionImpl::from(c);
         });
         Ok(())
     }

@@ -23,7 +23,7 @@ pub struct Session {
 }
 
 #[derive(Debug, Clone)]
-pub struct SessionHandle {
+pub struct SessionImpl {
     id: usize,
 }
 
@@ -32,26 +32,26 @@ pub struct EncryptedOutput {
     pub data: String,
 }
 
-impl OrgFreedesktopSecretSession for SessionHandle {
+impl OrgFreedesktopSecretSession for SessionImpl {
     fn close(&mut self) -> Result<(), dbus::MethodErr> {
         SESSION_MANAGER.lock().unwrap().close_session(self.id);
         CROSSROADS
             .lock()
             .unwrap()
-            .remove::<SessionHandle>(&self.path().into());
+            .remove::<SessionImpl>(&self.path().into());
         Ok(())
     }
 }
 
-impl DBusHandle for SessionHandle {
+impl DBusHandle for SessionImpl {
     fn path(&self) -> DBusHandlePath {
         SinglePath(format!("/org/freedesktop/secrets/session/{}", self.id).into())
     }
 }
 
 impl Session {
-    pub fn get_dbus_handle(&self) -> SessionHandle {
-        SessionHandle { id: self.id }
+    pub fn get_dbus_handle(&self) -> SessionImpl {
+        SessionImpl { id: self.id }
     }
 }
 
