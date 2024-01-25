@@ -16,6 +16,8 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
+    - name: Pre-requisites
+      run: sudo apt install libdbus-1-dev pkg-config libtss2-sys1
     - name: Build
       run: cargo build --verbose
     - name: Run tests
