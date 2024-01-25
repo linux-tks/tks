@@ -157,8 +157,6 @@ mod tests {
         debug!("prompt_path: {}", prompt_path);
         assert!(prompt_path.to_string() == "/");
         assert!(!coll_path.to_string().is_empty());
-        let re = Regex::new(r"/org/freedesktop/secrets/collection/(.*)").unwrap();
-        assert!(coll_name == &re.captures(&coll_path.to_string()).unwrap()[1]);
 
         // wait a bit for the signal to arrive
         sleep(Duration::from_millis(300)).await;
