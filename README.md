@@ -1,7 +1,8 @@
 
 # TKS
 
-TKS Keeps Secrets, otherwise called "Tux Keeps Secrets"
+TKS Keeps Secrets, otherwise called "Tux Keeps Secrets", pronounced the same
+as "ticks".
 
 ## Aim
 
