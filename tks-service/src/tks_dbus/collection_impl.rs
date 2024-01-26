@@ -3,9 +3,6 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
-use crate::tks_dbus::fdo::prompt::register_org_freedesktop_secret_prompt;
-use crate::tks_dbus::item_impl::ItemImpl;
-use crate::tks_dbus::prompt_impl::PromptHandle;
 use crate::tks_dbus::prompt_impl::PromptImpl;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
@@ -25,6 +22,7 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+use crate::tks_dbus::item_impl::ItemImpl;
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionImpl {
@@ -218,12 +216,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                         },
                         None,
                     );
-                    let prompt_path = prompt.path();
-                    register_object!(
-                        register_org_freedesktop_secret_prompt::<PromptHandle>,
-                        prompt
-                    );
-                    return Ok((dbus::Path::from("/"), prompt_path.into()));
+                    return Ok((dbus::Path::from("/"), prompt));
                 } else {
                     error!("Error creating confirmation dialog. Do you have pinentry installed?");
                     return Err(dbus::MethodErr::failed(

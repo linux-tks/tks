@@ -1,6 +1,9 @@
+use crate::register_object;
+use crate::tks_dbus::fdo::prompt::register_org_freedesktop_secret_prompt;
 use crate::tks_dbus::fdo::prompt::OrgFreedesktopSecretPrompt;
 use crate::tks_dbus::fdo::prompt::OrgFreedesktopSecretPromptCompleted;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
+use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{DBusHandle, DBusHandlePath};
 use crate::TksError;
@@ -46,7 +49,12 @@ pub struct PromptImpl {
 }
 
 impl PromptImpl {
-    pub fn new<D, F>(dialog: D, text: String, on_confirmed: F, on_denied: Option<F>) -> PromptHandle
+    pub fn new<D, F>(
+        dialog: D,
+        text: String,
+        on_confirmed: F,
+        on_denied: Option<F>,
+    ) -> dbus::Path<'static>
     where
         D: Dialog + Send + 'static,
         F: FnMut() -> Result<(), TksError> + Send + 'static,
@@ -64,8 +72,10 @@ impl PromptImpl {
             on_denied: on_denied.map(|f| Box::new(f) as Box<PromptAction>),
         };
         let handle = prompt.get_dbus_handle();
+        let path = handle.path().clone();
         PROMPTS.lock().unwrap().insert(prompt_id, prompt);
-        handle
+        register_object!(register_org_freedesktop_secret_prompt, handle);
+        path.into()
     }
     pub fn get_dbus_handle(&self) -> PromptHandle {
         PromptHandle {
@@ -91,7 +101,8 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
                     trace!("confirmation is {}", x);
                     dismissed = !x;
                     if x {
-                        (prompt.on_confirmed)().map_err(|e| <TksError as Into<dbus::MethodErr>>::into(e))?;
+                        (prompt.on_confirmed)()
+                            .map_err(|e| <TksError as Into<dbus::MethodErr>>::into(e))?;
                     } else {
                         if let Some(f) = &mut prompt.on_denied {
                             f().map_err(|e| <TksError as Into<dbus::MethodErr>>::into(e))?;
