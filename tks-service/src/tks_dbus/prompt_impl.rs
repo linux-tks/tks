@@ -3,6 +3,7 @@ use crate::tks_dbus::fdo::prompt::OrgFreedesktopSecretPromptCompleted;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{DBusHandle, DBusHandlePath};
+use crate::TksError;
 use dbus;
 use dbus::arg;
 use dbus::message::SignalArgs;
@@ -13,7 +14,6 @@ use secrecy::SecretString;
 use std::collections::BTreeMap as Map;
 use std::sync::Arc;
 use std::sync::Mutex;
-use crate::TksError;
 
 lazy_static! {
     pub static ref PROMPTS: Arc<Mutex<Map<usize, PromptImpl>>> = Arc::new(Mutex::new(Map::new()));
@@ -91,18 +91,10 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
                     trace!("confirmation is {}", x);
                     dismissed = !x;
                     if x {
-                        (prompt.on_confirmed)().map_err(|e| {
-                            dbus::MethodErr::failed(
-                                format!("Prompt on_confirmed failed {}", e).as_str(),
-                            )
-                        })?;
+                        (prompt.on_confirmed)().map_err(|e| <TksError as Into<dbus::MethodErr>>::into(e))?;
                     } else {
                         if let Some(f) = &mut prompt.on_denied {
-                            f().map_err(|e| {
-                                dbus::MethodErr::failed(
-                                    format!("Prompt on_deny failed {}", e).as_str(),
-                                )
-                            })?;
+                            f().map_err(|e| <TksError as Into<dbus::MethodErr>>::into(e))?;
                         }
                     }
                 }

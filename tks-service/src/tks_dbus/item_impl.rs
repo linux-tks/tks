@@ -151,7 +151,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
                 let s = item.get_secret(s)?;
                 Ok((session, s.1, s.2, s.3.clone()))
             })
-            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
+            .map_err(|e| e.into())
     }
     fn set_secret(
         &mut self,
@@ -165,10 +165,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
             .parse::<usize>()
             .map_err(|_| dbus::MethodErr::failed(&"Invalid session ID"))?;
 
-        if self
-            .locked()
-            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))?
-        {
+        if self.locked()? {
             return Err(dbus::MethodErr::failed(&"Item is locked"));
         }
 
@@ -244,7 +241,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
                 });
                 Ok(())
             })
-            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
+            .map_err(|e| e.into())
     }
     fn label(&self) -> Result<String, dbus::MethodErr> {
         STORAGE
@@ -253,7 +250,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
             .with_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
                 Ok(item.label.clone())
             })
-            .map_err(|_| dbus::MethodErr::failed(&"Item not found"))
+            .map_err(|e| e.into())
     }
 
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {

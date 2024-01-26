@@ -3,6 +3,7 @@
 extern crate core;
 
 use std::sync::{MutexGuard, PoisonError};
+use dbus::MethodErr;
 use openssl::error::ErrorStack;
 use log::error;
 use crate::storage::Storage;
@@ -66,8 +67,8 @@ impl From<PoisonError<std::sync::MutexGuard<'_, storage::Storage>>> for TksError
     }
 }
 
-impl Into<dbus::MethodErr> for TksError {
-    fn into(self) -> dbus::MethodErr {
-        dbus::MethodErr::failed(&self.to_string())
+impl From<TksError> for MethodErr {
+    fn from(e: TksError) -> Self {
+        dbus::MethodErr::failed(&e.to_string())
     }
 }

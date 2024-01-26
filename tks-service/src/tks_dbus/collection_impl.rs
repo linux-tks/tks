@@ -1,4 +1,3 @@
-use crate::{register_object, TksError};
 use crate::storage::Collection;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
@@ -14,6 +13,7 @@ use crate::tks_dbus::DBusHandlePath::MultiplePaths;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{sanitize_string, DBusHandlePath};
+use crate::{register_object, TksError};
 use arg::cast;
 use dbus::arg;
 use dbus::arg::RefArg;
@@ -34,7 +34,7 @@ pub struct CollectionImpl {
 }
 
 lazy_static! {
-    pub static ref COLLECTION_HANDLES: Arc<Mutex<HashMap<Uuid, CollectionImpl >>> =
+    pub static ref COLLECTION_HANDLES: Arc<Mutex<HashMap<Uuid, CollectionImpl>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
@@ -126,9 +126,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                     .map(|item| ItemImpl::from(item).path().into())
                     .collect::<Vec<dbus::Path>>())
             })
-            .map_err(|e| {
-                dbus::MethodErr::failed(&format!("Error searching items for collection: {}", e))
-            })
+            .map_err(|e| e.into())
     }
     // d-feet example call:
     // {"org.freedesktop.Secret.Item.Label":GLib.Variant('s',"test"), "org.freedesktop.Secret.Item.Attributes":GLib.Variant("a{sv}",{"prop1":GLib.Variant('s',"val1"),"prop2":GLib.Variant('s',"val2")})}, ("/",[],[],""),0
@@ -245,10 +243,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             item_attributes,
             session_id,
         )
-        .map_err(move |e| {
-            error!("Error creating item: {}", e);
-            dbus::MethodErr::failed(&format!("Error creating item: {}", e))
-        })
+        .map_err(|e| e.into())
     }
     fn items(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         STORAGE
@@ -265,8 +260,8 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                     .collect::<Vec<dbus::Path>>())
             })
             .map_err(|e| {
-                error!("Error getting items for collectioni {}: {}", self.uuid, e);
-                dbus::MethodErr::failed(&format!("Error getting items for collection: {}", e))
+                error!("Error getting items for collection {}: {}", self.uuid, e);
+                e.into()
             })
     }
     fn label(&self) -> Result<String, dbus::MethodErr> {
@@ -276,7 +271,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             .with_collection(self.uuid.clone(), |collection| Ok(collection.name.clone()))
             .map_err(|e| {
                 error!("Error retrieving collectioni {}: {}", self.uuid, e);
-                dbus::MethodErr::failed(&format!("Error getting label for collection: {}", e))
+                e.into()
             })
     }
     fn set_label(&self, value: String) -> Result<(), dbus::MethodErr> {
@@ -287,9 +282,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                 collection.name = value;
                 Ok(())
             })
-            .map_err(|e| {
-                dbus::MethodErr::failed(&format!("Error setting label for collection: {}", e))
-            })
+            .map_err(|e| e.into())
     }
 
     fn locked(&self) -> Result<bool, dbus::MethodErr> {
@@ -297,36 +290,21 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             .lock()
             .unwrap()
             .with_collection(self.uuid, |collection| Ok(collection.locked))
-            .map_err(|e| {
-                dbus::MethodErr::failed(&format!(
-                    "Error getting locked status for collection: {}",
-                    e
-                ))
-            })
+            .map_err(|e| e.into())
     }
     fn created(&self) -> Result<u64, dbus::MethodErr> {
         STORAGE
             .lock()
             .unwrap()
             .with_collection(self.uuid.clone(), |collection| Ok(collection.created))
-            .map_err(|e| {
-                dbus::MethodErr::failed(&format!(
-                    "Error getting created timestamp for collection: {}",
-                    e
-                ))
-            })
+            .map_err(|e| e.into())
     }
     fn modified(&self) -> Result<u64, dbus::MethodErr> {
         STORAGE
             .lock()
             .unwrap()
             .with_collection(self.uuid.clone(), |collection| Ok(collection.modified))
-            .map_err(|e| {
-                dbus::MethodErr::failed(&format!(
-                    "Error getting modified timestamp for collection: {}",
-                    e
-                ))
-            })
+            .map_err(|e| e.into())
     }
 }
 

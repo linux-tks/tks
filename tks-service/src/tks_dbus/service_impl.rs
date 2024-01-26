@@ -9,7 +9,7 @@ use log;
 use log::{debug, error, trace};
 use std::collections::HashMap;
 extern crate pretty_env_logger;
-use crate::convert_prop_map;
+use crate::{convert_prop_map, TksError};
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionImpl;
 use crate::tks_dbus::item_impl::ItemImpl;
@@ -128,7 +128,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             })
             .map_err(|e| {
                 error!("Error creating collection: {}", e);
-                dbus::MethodErr::failed(&format!("Error creating collection: {}", e))
+                e.into()
             })
     }
     fn search_items(
@@ -298,11 +298,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
-        let cols = CollectionImpl::collections()
-            .map_err(|e| {
-                error!("Error getting collections: {}", e);
-                dbus::MethodErr::failed(&format!("Error getting collections"))
-            })?
+        let cols = CollectionImpl::collections()?
             .iter()
             .map(|c| c.path().into())
             .collect::<Vec<dbus::Path<'static>>>();
@@ -317,15 +313,9 @@ impl ServiceImpl {
     pub fn get_dbus_handle(&self) -> ServiceHandle {
         ServiceHandle {}
     }
-    pub fn register_collections() -> Result<(), std::io::Error> {
+    pub fn register_collections() -> Result<(), TksError> {
         let collections = &STORAGE
-            .lock()
-            .map_err(|e| {
-                std::io::Error::new(
-                    std::io::ErrorKind::Other,
-                    format!("Error getting settings: {}", e),
-                )
-            })?
+            .lock()?
             .collections;
         collections.iter().for_each(|c| {
             // constructing the CollectionHandle will register the collection
