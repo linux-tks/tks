@@ -13,6 +13,7 @@ use secrecy::SecretString;
 use std::collections::BTreeMap as Map;
 use std::sync::Arc;
 use std::sync::Mutex;
+use crate::TksError;
 
 lazy_static! {
     pub static ref PROMPTS: Arc<Mutex<Map<usize, PromptImpl>>> = Arc::new(Mutex::new(Map::new()));
@@ -34,7 +35,7 @@ pub struct PromptHandle {
     prompt_id: usize,
 }
 
-type PromptAction = dyn FnMut() -> Result<(), std::io::Error> + Send;
+type PromptAction = dyn FnMut() -> Result<(), TksError> + Send;
 
 pub struct PromptImpl {
     prompt_id: usize,
@@ -48,7 +49,7 @@ impl PromptImpl {
     pub fn new<D, F>(dialog: D, text: String, on_confirmed: F, on_denied: Option<F>) -> PromptHandle
     where
         D: Dialog + Send + 'static,
-        F: FnMut() -> Result<(), std::io::Error> + Send + 'static,
+        F: FnMut() -> Result<(), TksError> + Send + 'static,
     {
         let prompt_id = {
             let mut counter = PROMPT_COUNTER.lock().unwrap();

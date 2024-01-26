@@ -1,4 +1,4 @@
-use crate::register_object;
+use crate::{register_object, TksError};
 use crate::storage::Collection;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
@@ -203,7 +203,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                             let item_label = item_label.clone();
                             STORAGE.lock().unwrap().with_collection(
                                 uuid,
-                                |collection| -> Result<(), std::io::Error> {
+                                |collection| -> Result<(), TksError> {
                                     collection.unlock()?;
                                     trace!("Creating item after collection unlock");
                                     CollectionImpl::create_item(
@@ -338,7 +338,7 @@ impl CollectionImpl {
         item_label: String,
         item_attributes: HashMap<String, String>,
         session_id: usize,
-    ) -> Result<(dbus::Path, dbus::Path), std::io::Error> {
+    ) -> Result<(dbus::Path, dbus::Path), TksError> {
         let sm = SESSION_MANAGER.lock().unwrap();
         let session = sm.sessions.get(session_id).ok_or_else(|| {
             std::io::Error::new(
@@ -346,12 +346,7 @@ impl CollectionImpl {
                 format!("Session {} not found", session_id),
             )
         })?;
-        let mut storage = STORAGE.lock().map_err(|e| {
-            std::io::Error::new(
-                ErrorKind::Other,
-                format!("Error locking storage: {}", e.to_string()),
-            )
-        })?;
+        let mut storage = STORAGE.lock()?;
         storage
             .with_collection(collection_uuid, |collection| {
                 collection.create_item(
@@ -378,7 +373,7 @@ impl CollectionImpl {
             })
     }
 
-    pub fn collections() -> Result<Vec<CollectionImpl>, std::io::Error> {
+    pub fn collections() -> Result<Vec<CollectionImpl>, TksError> {
         Ok(COLLECTION_HANDLES
             .lock()
             .unwrap()

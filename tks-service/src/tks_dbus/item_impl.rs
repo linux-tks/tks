@@ -14,6 +14,7 @@ use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{sanitize_string, DBusHandlePath};
 use dbus::message::SignalArgs;
+use dbus::MethodErr;
 use lazy_static::lazy_static;
 use log::error;
 use log::{debug, trace};
@@ -28,7 +29,7 @@ pub struct ItemImpl {
 }
 
 lazy_static! {
-    pub static ref ITEM_HANDLES: Arc<Mutex<HashMap<Uuid, ItemImpl >>> =
+    pub static ref ITEM_HANDLES: Arc<Mutex<HashMap<Uuid, ItemImpl>>> =
         Arc::new(Mutex::new(HashMap::new()));
 }
 
@@ -226,15 +227,11 @@ impl OrgFreedesktopSecretItem for ItemImpl {
         STORAGE
             .lock()
             .unwrap()
-            .modify_item(
-                &self.item_id.collection_uuid,
-                &self.item_id.uuid,
-                |item| {
-                    item.attributes = value;
-                    Ok(())
-                },
-            )
-            .and_then(|_|{
+            .modify_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
+                item.attributes = value;
+                Ok(())
+            })
+            .and_then(|_| {
                 let item_path_clone = self.path().clone();
                 tokio::spawn(async move {
                     debug!("Sending ItemChanged signal");
@@ -286,24 +283,23 @@ impl OrgFreedesktopSecretItem for ItemImpl {
     }
 
     fn type_(&self) -> Result<String, dbus::MethodErr> {
-        match self.locked() {
-            Ok(true) => Err(dbus::MethodErr::failed(&"Item is locked")),
-            Ok(false) => match STORAGE.lock().unwrap().with_item(
-                &self.item_id.collection_uuid,
-                &self.item_id.uuid,
-                |item| match item.data {
-                    Some(ref data) => Ok(data.content_type.clone()),
-                    None => Err(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!("Not found"),
-                    )),
-                },
-            ) {
-                Ok(content_type) => Ok(content_type),
-                Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
-            },
-            Err(_) => Err(dbus::MethodErr::failed(&"Item not found")),
+        if self.locked()? {
+            return Err(dbus::MethodErr::failed(&"Item is locked"));
         }
+
+        STORAGE
+            .lock()
+            .unwrap()
+            .with_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
+                Ok(item
+                    .data
+                    .clone()
+                    .ok_or_else(|| MethodErr::failed("No data"))
+                    .unwrap()
+                    .content_type
+                    .clone())
+            })
+            .map_err(|e| e.into())
     }
 
     fn set_type(&self, value: String) -> Result<(), dbus::MethodErr> {

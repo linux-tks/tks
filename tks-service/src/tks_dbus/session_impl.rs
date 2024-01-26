@@ -6,15 +6,15 @@ use lazy_static::lazy_static;
 use log::{debug, error, trace};
 use openssl::bn::BigNum;
 use openssl::dh::Dh;
-use openssl::error::ErrorStack;
 use openssl::md::Md;
 use openssl::pkey::Id;
 use openssl::pkey_ctx::{HkdfMode, PkeyCtx};
-use openssl::symm::{decrypt, encrypt, Cipher};
+use openssl::symm::{Cipher, decrypt, encrypt};
 use std::error;
 use std::sync::Arc;
 use std::sync::Mutex;
 use vec_map::VecMap;
+use crate::TksError;
 
 pub struct Session {
     pub id: usize,
@@ -63,37 +63,6 @@ pub struct SessionManager {
 lazy_static! {
     pub static ref SESSION_MANAGER: Arc<Mutex<SessionManager>> =
         Arc::new(Mutex::new(SessionManager::new()));
-}
-
-#[derive(Debug)]
-pub enum TksError {
-    ParameterError,
-    CryptoError,
-    IOError(std::io::Error),
-}
-
-impl std::fmt::Display for TksError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            TksError::ParameterError => write!(f, "Parameter error"),
-            TksError::CryptoError => write!(f, "Crypto error"),
-            TksError::IOError(e) => write!(f, "IO error: {}", e),
-        }
-    }
-}
-
-impl From<std::io::Error> for TksError {
-    fn from(e: std::io::Error) -> Self {
-        error!("io error: {:?}", e);
-        TksError::IOError(e)
-    }
-}
-
-impl From<ErrorStack> for TksError {
-    fn from(e: ErrorStack) -> Self {
-        error!("openssl error: {:?}", e);
-        TksError::CryptoError
-    }
 }
 
 impl SessionManager {

@@ -16,6 +16,7 @@ use std::vec::Vec;
 use uuid::Uuid;
 
 use crate::settings::SETTINGS;
+use crate::TksError;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
@@ -121,26 +122,25 @@ impl Storage {
             Ok(storage)
         };
 
-        do_create_storage().unwrap_or_else(|e: std::io::Error| {
+        do_create_storage().unwrap_or_else(|e: TksError| {
             panic!("Error initializing storage: {:}", e);
         })
     }
 
-    pub fn read_alias(&mut self, alias: &str) -> Result<String, std::io::Error> {
+    pub fn read_alias(&mut self, alias: &str) -> Result<String, TksError> {
         self.collections
             .iter()
             .filter(|c| c.aliases.is_some())
             .find(|&c| c.aliases.as_ref().unwrap().contains(&alias.to_string()))
             .map(|c| c.name.clone())
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Alias '{}' not found", alias),
+            .ok_or(TksError::NotFound(
+                format!("Alias '{}' not found", alias).into(),
             ))
     }
 
-    pub fn with_collection<F, T>(&mut self, uuid: Uuid, f: F) -> Result<T, std::io::Error>
+    pub fn with_collection<F, T>(&mut self, uuid: Uuid, f: F) -> Result<T, TksError>
     where
-        F: FnOnce(&mut Collection) -> Result<T, std::io::Error>,
+        F: FnOnce(&mut Collection) -> Result<T, TksError>,
     {
         let mut collection = self
             .collections
@@ -155,16 +155,15 @@ impl Storage {
         f(&mut collection)
     }
 
-    pub fn modify_collection<F>(&mut self, uuid: &Uuid, f: F) -> Result<(), std::io::Error>
+    pub fn modify_collection<F>(&mut self, uuid: &Uuid, f: F) -> Result<(), TksError>
     where
-        F: FnOnce(&mut Collection) -> Result<(), std::io::Error>,
+        F: FnOnce(&mut Collection) -> Result<(), TksError>,
     {
         self.collections
             .iter_mut()
             .find(|c| c.uuid == *uuid)
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Collection '{}' not found", uuid),
+            .ok_or(TksError::NotFound(
+                format!("Collection '{}' not found", uuid).into(),
             ))
             .and_then(|collection| {
                 f(collection)?;
@@ -186,9 +185,9 @@ impl Storage {
         collection_uuid: &Uuid,
         item_uuid: &Uuid,
         f: F,
-    ) -> Result<T, std::io::Error>
+    ) -> Result<T, TksError>
     where
-        F: FnOnce(&Item) -> Result<T, std::io::Error>,
+        F: FnOnce(&Item) -> Result<T, TksError>,
     {
         let collection = self
             .collections
@@ -206,7 +205,7 @@ impl Storage {
                 std::io::ErrorKind::NotFound,
                 format!("Item '{}' not found", item_uuid),
             ))?;
-        f(&item)
+        f(item)
     }
 
     pub fn modify_item<F, T>(
@@ -214,9 +213,9 @@ impl Storage {
         collection_uuid: &Uuid,
         item_uuid: &Uuid,
         f: F,
-    ) -> Result<T, std::io::Error>
+    ) -> Result<T, TksError>
     where
-        F: FnOnce(&mut Item) -> Result<T, std::io::Error>,
+        F: FnOnce(&mut Item) -> Result<T, TksError>,
     {
         let collection = self
             .collections
@@ -265,7 +264,7 @@ impl Storage {
         name: &str,
         alias: &str,
         _properties: &HashMap<String, String>,
-    ) -> Result<Uuid, std::io::Error> {
+    ) -> Result<Uuid, TksError> {
         let mut collection_path = PathBuf::new();
         collection_path.push(self.path.clone());
         collection_path.push(name);
@@ -284,7 +283,7 @@ impl Storage {
         Ok(uuid)
     }
 
-    fn save_collection(collection: &mut Collection) -> Result<(), std::io::Error> {
+    fn save_collection(collection: &mut Collection) -> Result<(), TksError> {
         assert!(!collection.path.is_empty());
         let _ = DirBuilder::new()
             .recursive(true)
@@ -322,7 +321,7 @@ impl Storage {
         Ok(())
     }
 
-    fn load_collection(path: &PathBuf) -> Result<Collection, std::io::Error> {
+    fn load_collection(path: &PathBuf) -> Result<Collection, TksError> {
         trace!("Loading collection from path '{}'", path.display());
         let mut metadata_path = PathBuf::new();
         metadata_path.push(path);
@@ -339,7 +338,7 @@ impl Storage {
 }
 
 impl Collection {
-    fn new(name: &str, path: &OsStr) -> Result<Collection, std::io::Error> {
+    fn new(name: &str, path: &OsStr) -> Result<Collection, TksError> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -372,12 +371,9 @@ impl Collection {
         properties: HashMap<String, String>,
         secret: (&Session, Vec<u8>, Vec<u8>, String),
         replace: bool,
-    ) -> Result<ItemId, std::io::Error> {
+    ) -> Result<ItemId, TksError> {
         if self.locked {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Collection is locked"),
-            ));
+            return Err(TksError::PermissionDenied);
         }
         let secret_session = secret.0;
 
@@ -402,10 +398,7 @@ impl Collection {
                     Ok(data) => data,
                     Err(e) => {
                         error!("Cannot decrypt secret: {}", e);
-                        return Err(std::io::Error::new(
-                            std::io::ErrorKind::PermissionDenied,
-                            format!("Error decrypting secret: {}", e),
-                        ));
+                        return Err(TksError::CryptoError);
                     }
                 },
                 content_type: secret.3,
@@ -430,10 +423,7 @@ impl Collection {
                 self.items[index] = item;
                 self.items.get(index).unwrap()
             } else {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::AlreadyExists,
-                    format!("Item already exists"),
-                ));
+                return Err(TksError::Duplicate);
             }
         } else {
             self.items.push(item);
@@ -444,19 +434,14 @@ impl Collection {
         Ok(item_id)
     }
 
-    pub fn delete_item(&mut self, uuid: &Uuid) -> Result<Item, std::io::Error> {
+    pub fn delete_item(&mut self, uuid: &Uuid) -> Result<Item, TksError> {
         if self.locked {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::PermissionDenied,
-                format!("Collection is locked"),
-            ));
+            return Err(TksError::PermissionDenied);
         }
         self.items
             .iter()
             .position(|i| i.id.uuid == *uuid)
-            .ok_or_else(|| {
-                std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item not found"))
-            })
+            .ok_or_else(|| TksError::NotFound(None))
             .and_then(|i| {
                 let older = self.items.swap_remove(i);
                 Storage::save_collection(self)?;
@@ -474,7 +459,7 @@ impl Collection {
         }
     }
 
-    pub fn unlock(&mut self) -> Result<(), std::io::Error> {
+    pub fn unlock(&mut self) -> Result<(), TksError> {
         if !self.locked || self.items.is_empty() {
             self.locked = false;
             return Ok(());
@@ -509,7 +494,7 @@ impl Collection {
         self.locked = false;
         Ok(())
     }
-    pub fn lock(&mut self) -> Result<(), std::io::Error> {
+    pub fn lock(&mut self) -> Result<(), TksError> {
         self.locked = true;
         self.items.iter_mut().for_each(|item| item.data = None);
         Ok(())
@@ -541,19 +526,11 @@ impl Item {
         parameters: Vec<u8>,
         value: &Vec<u8>,
         content_type: String,
-    ) -> Result<(), std::io::Error> {
+    ) -> Result<(), TksError> {
         trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {
             uuid: self.id.uuid,
-            data: match session.decrypt(&parameters, value) {
-                Ok(data) => data,
-                Err(e) => {
-                    return Err(std::io::Error::new(
-                        std::io::ErrorKind::PermissionDenied,
-                        format!("Error decrypting secret: {}", e),
-                    ));
-                }
-            },
+            data: session.decrypt(&parameters, value)?,
             content_type,
         });
         Ok(())
