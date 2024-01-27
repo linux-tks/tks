@@ -9,15 +9,16 @@ use log;
 use log::{debug, error, trace};
 use std::collections::HashMap;
 extern crate pretty_env_logger;
-use crate::{convert_prop_map, TksError};
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionImpl;
-use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
+use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::session_impl::SessionImpl;
 use crate::tks_dbus::CROSSROADS;
+use crate::{convert_prop_map, TksError};
 
+use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
 use DBusHandlePath::MultiplePaths;
@@ -148,11 +149,26 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     .iter()
                     .filter(|c| c.locked == $locked)
                     .for_each(|c| {
-                        $vec.extend(c.items.iter().filter(|i| i.attributes == attributes).map(
-                            |i| {
-                                ItemImpl::from(i).into()
-                            },
-                        ));
+                        $vec.extend(
+                            c.items
+                                .iter()
+                                .filter(|i| {
+                                    attributes.iter().fold(true, |b, (k, v)| {
+                                        b && i
+                                            .attributes
+                                            .clone()
+                                            .into_keys()
+                                            .find(|kx| kx == k)
+                                            .is_some()
+                                            && i.attributes
+                                                .clone()
+                                                .into_values()
+                                                .find(|vx| vx == v)
+                                                .is_some()
+                                    })
+                                })
+                                .map(|i| ItemImpl::from(i).into()),
+                        );
                     })
             };
         }
@@ -169,45 +185,34 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         trace!("unlock {:?}", objects);
         // TODO: logic with aliases is not correct here; we should instead get paths one by one and
         // compose the unlocked and locked vectors from each step
-        let collection_names = objects
+        let collection_paths: Vec<_> = objects
             .iter()
-            .map(|p| p.to_string())
-            .map(|p| p.split('/').map(|s| s.to_string()).collect::<Vec<String>>()[5].clone())
-            .collect::<Vec<String>>();
-        let mut unlocked = Vec::new();
-        STORAGE
-            .lock()
-            .unwrap()
-            .collections
-            .iter_mut()
-            .filter(|c| {
-                collection_names.contains(&c.name)
-                    || (c.aliases.as_ref().map_or(false, |aliases| {
-                        aliases
-                            .iter()
-                            .find_map(|n| Some(collection_names.contains(n)))
-                            .unwrap()
-                    }))
+            .map(|p| {
+                let cp: Vec<_> = p.split('/').collect();
+                let cp = cp[0..6].join("/");
+                let cp = dbus::Path::from(cp);
+                let coll = CollectionImpl::from(&cp);
+                (p, cp, coll)
             })
-            .for_each(|c| {
-                let _ = c
-                    .unlock()
-                    .and_then(|()| {
-                        objects.iter().for_each(|p| {
-                            if p.to_string().contains(&c.name) {
-                                unlocked.push(p.clone());
-                            }
-                        });
-                        Ok(())
-                    })
-                    .map_err(|e| {
-                        // TODO this may instead require a prompt
-                        error!("Couldn't lock collection {}: {:?}", c.name, e);
-                    });
-            });
-        let prompt = dbus::Path::from("/");
-        debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompt);
-        Ok((unlocked, prompt))
+            .collect();
+        let mut unlocked = Vec::new();
+        let no_prompt = dbus::Path::from("/");
+        // let mut prompts = Vec::new();
+        for cc in collection_paths {
+            let mut coll = cc.2;
+            if coll.is_not_default() {
+                let _ = coll.unlock()?;
+                // if prompt == no_prompt {
+                let p = cc.0.clone();
+                unlocked.push(p);
+                // } else {
+                //     prompts.push(prompt.clone());
+                // }
+            }
+        }
+        // debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
+        let unlocked = unlocked;
+        Ok((unlocked, no_prompt))
     }
 
     fn lock(
@@ -238,7 +243,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn get_secrets(
         &mut self,
-        items: Vec<dbus::Path<'static>>,
+        item_paths: Vec<dbus::Path<'static>>,
         session: dbus::Path<'static>,
     ) -> Result<
         ::std::collections::HashMap<
@@ -247,29 +252,14 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         >,
         dbus::MethodErr,
     > {
-        trace!("get_secrets {:?}", items);
-        let session_id = session
-            .split('/')
-            .last()
-            .unwrap()
-            .parse::<usize>()
-            .map_err(|_| {
-                error!("Invalid session ID");
-                dbus::MethodErr::failed(&"Invalid session ID")
-            })?;
-        SESSION_MANAGER
-            .lock()
-            .unwrap()
-            .sessions
-            .get(session_id)
-            .ok_or_else(|| {
-                error!("Session {} not found", session_id);
-                dbus::MethodErr::failed(&"Session not found")
-            })?;
+        trace!("get_secrets {:?}", item_paths);
         type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
-        let secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
-        // TODO as so: iterate over the paths, from each path use DBusHandle::from to grab the
-        // corresponding handle, then from that handle go read the secret
+        let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
+
+        let items: Vec<_> = item_paths.iter().map(|p| ItemImpl::from(p)).collect();
+        for mut i in items {
+            secrets_map.insert(i.path.clone(), i.get_secret(session.clone())?);
+        }
         Ok(secrets_map)
     }
 
@@ -314,9 +304,7 @@ impl ServiceImpl {
         ServiceHandle {}
     }
     pub fn register_collections() -> Result<(), TksError> {
-        let collections = &STORAGE
-            .lock()?
-            .collections;
+        let collections = &STORAGE.lock()?.collections;
         collections.iter().for_each(|c| {
             // constructing the CollectionHandle will register the collection
             let _ = CollectionImpl::from(c);

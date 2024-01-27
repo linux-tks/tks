@@ -3,6 +3,7 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
+use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::prompt_impl::PromptImpl;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
@@ -12,9 +13,9 @@ use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{sanitize_string, DBusHandlePath};
 use crate::{register_object, TksError};
 use arg::cast;
-use dbus::arg;
 use dbus::arg::RefArg;
 use dbus::message::SignalArgs;
+use dbus::{arg, Path};
 use lazy_static::lazy_static;
 use log::{debug, error, trace, warn};
 use pinentry::ConfirmationDialog;
@@ -22,7 +23,6 @@ use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
-use crate::tks_dbus::item_impl::ItemImpl;
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionImpl {
@@ -57,6 +57,9 @@ impl CollectionImpl {
         register_object!(register_org_freedesktop_secret_collection, handle_clone);
         handle
     }
+    // IMPORTANT: this checks if collection object has a default value, and not that if this
+    // instance corresponds to the default collection!
+    pub fn is_not_default(&self) -> bool { !self.uuid.is_nil() }
 }
 
 impl From<&Collection> for CollectionImpl {
@@ -93,6 +96,18 @@ impl From<&Uuid> for CollectionImpl {
             .get(&uuid)
             .unwrap()
             .clone()
+    }
+}
+
+impl From<&dbus::Path<'_>> for CollectionImpl {
+    fn from(p: &Path) -> Self {
+        COLLECTION_HANDLES
+            .lock()
+            .unwrap()
+            .clone()
+            .into_values()
+            .find(|c| c.paths.contains(p))
+            .unwrap_or_default()
     }
 }
 
@@ -351,5 +366,12 @@ impl CollectionImpl {
             .values()
             .map(|h| h.clone())
             .collect())
+    }
+    pub(crate) fn unlock(&mut self) -> Result<dbus::Path, TksError> {
+        STORAGE.lock()?
+            .with_collection(self.uuid, |c| {
+                let _ = c.locked.then(|| c.unlock()).unwrap();
+                Ok(dbus::Path::from("/"))
+            })
     }
 }

@@ -14,7 +14,7 @@ use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{sanitize_string, DBusHandlePath};
 use dbus::message::SignalArgs;
-use dbus::MethodErr;
+use dbus::{MethodErr, Path};
 use lazy_static::lazy_static;
 use log::error;
 use log::{debug, trace};
@@ -22,10 +22,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ItemImpl {
     item_id: ItemId,
-    path: dbus::Path<'static>,
+    pub(crate) path: dbus::Path<'static>,
 }
 
 lazy_static! {
@@ -35,6 +35,7 @@ lazy_static! {
 
 impl ItemImpl {
     fn new(item_id: &ItemId) -> Self {
+        assert!(!item_id.collection_uuid.is_nil());
         let handle = ItemImpl {
             path: format!(
                 "/org/freedesktop/secrets/collection/{}/{}",
@@ -52,6 +53,8 @@ impl ItemImpl {
     pub fn uuid_to_path(uuid: &Uuid) -> dbus::Path<'static> {
         ITEM_HANDLES.lock().unwrap().get(uuid).unwrap().path.clone()
     }
+    pub fn is_default(&self) -> bool { self.item_id.uuid.is_nil() }
+    pub fn is_not_default(&self) -> bool { !self.is_default() }
 }
 
 impl From<&Item> for ItemImpl {
@@ -88,6 +91,23 @@ impl DBusHandle for ItemImpl {
 impl From<ItemImpl> for dbus::Path<'static> {
     fn from(handle: ItemImpl) -> Self {
         handle.path().into()
+    }
+}
+
+impl From<Path<'_>> for ItemImpl {
+    fn from(p: Path) -> Self {
+        ItemImpl::from(&p)
+    }
+}
+impl From<&Path<'_>> for ItemImpl {
+    fn from(p: &Path) -> Self {
+        ITEM_HANDLES
+            .lock()
+            .unwrap()
+            .clone()
+            .into_values()
+            .find(|i| i.path == *p)
+            .unwrap_or_default()
     }
 }
 

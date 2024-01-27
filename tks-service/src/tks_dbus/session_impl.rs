@@ -139,7 +139,6 @@ impl Session {
 
                     let client_pub_key = BigNum::from_slice(input.as_slice())?;
                     let shared_secret = priv_key.compute_key(&client_pub_key)?;
-                    debug!("shared secret: {:X?}", shared_secret.as_slice());
 
                     let mut derive_key = PkeyCtx::new_id(Id::HKDF)?;
                     derive_key.derive_init()?;
@@ -150,7 +149,6 @@ impl Session {
                     derive_key.set_hkdf_key(shared_secret.as_slice())?;
                     let mut aes_bytes = vec![0u8; 128];
                     derive_key.derive(Some(aes_bytes.as_mut_slice()))?;
-                    debug!("aes bytes: {:X?}", aes_bytes);
                     self.aes_key_bytes = Some(aes_bytes[..16].to_owned());
 
                     Ok(Some(pub_key.to_vec()))

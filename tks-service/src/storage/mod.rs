@@ -43,7 +43,7 @@ pub struct Item {
     pub data: Option<ItemData>,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct ItemId {
     pub uuid: Uuid,
     #[serde(skip)]
@@ -333,6 +333,7 @@ impl Storage {
         let mut collection: Collection = serde_json::from_str(&data)?;
         collection.path = path.as_os_str().to_os_string();
         collection.locked = true;
+        collection.items.iter_mut().for_each(|i: &mut Item| i.id.collection_uuid = collection.uuid);
         Ok(collection)
     }
 }
