@@ -39,19 +39,13 @@ impl Settings {
 
         debug!("configuration: {:?}", s);
 
-        match s.try_deserialize() {
-            Ok(s) => {
-                let mut settings: Settings = s;
-                settings.storage.path = shellexpand::full(&settings.storage.path)
-                    .expect("Failed to expand storage path.")
-                    .into_owned()
-                    .into();
-                Ok(settings)
-            }
-            Err(e) => {
-                debug!("Failed to deserialize settings: {:?}", e);
-                Err(e)
-            }
-        }
+        s.try_deserialize().and_then(|s| {
+            let mut settings: Settings = s;
+            settings.storage.path = shellexpand::full(&settings.storage.path)
+                .expect("Failed to expand storage path.")
+                .into_owned()
+                .into();
+            Ok(settings)
+        })
     }
 }

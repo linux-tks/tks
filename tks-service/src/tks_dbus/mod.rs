@@ -139,6 +139,10 @@ macro_rules! convert_prop_map {
     };
 }
 
+const DBUS_NAME: &'static str = "org.freedesktop.secrets";
+
+const DBUS_PATH: &'static str = "/org/freedesktop/secrets";
+
 pub async fn start_server() {
     trace!("Connecting to the D-Bus session bus");
     let (resource, c) = connection::new_session_sync().unwrap_or_else(|_| {
@@ -159,12 +163,13 @@ pub async fn start_server() {
         let mut crossroads = CROSSROADS.lock().unwrap();
         let itf = register_org_freedesktop_secret_service(&mut crossroads);
         let service = ServiceImpl::new();
-        crossroads.insert("/org/freedesktop/secrets", &[itf], service);
+        crossroads.insert(DBUS_PATH, &[itf], service);
         ServiceImpl::register_collections().unwrap();
     }
 
+    trace!("Requesting name {}", DBUS_NAME);
     let nr = c
-        .request_name("org.freedesktop.secrets", false, true, true)
+        .request_name(DBUS_NAME, false, true, true)
         .await
         .unwrap_or_else(|_| {
             panic!("Failed to acquire the service name");
