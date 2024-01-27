@@ -1,5 +1,19 @@
 [package]
 name = "tks-service"
+authors = ["Valentin Rusu <tks@rusu.info>"]
+description = """
+tks-service is a daemon that provides a DBus interface that implements the
+standard org.freeedesktop.Secrets interface. It is meant to be used as a drop-in
+replacement for gnome-keyring-daemon, or KWallet Daemin, but it is not a fork of
+any of these. It is written from scratch in Rust, and it is meant to be used
+independently of any desktop environment.
+"""
+documentation = "https://github.com/linux-tks/tks"
+homepage = "https://linux-tks.io"
+repository = "https://github.com/linux-tks/tks"
+keywords = ["dbus", "keyring", "password", "secret", "storage", "vault",
+"kwallet", "gnome-keyring"]
+license = "BSD-2-Clause-Plus-Patent"
 version = "0.2.0"
 edition = "2021"
 
