@@ -372,6 +372,7 @@ impl Collection {
         properties: HashMap<String, String>,
         secret: (&Session, Vec<u8>, Vec<u8>, String),
         replace: bool,
+        sender:  String,
     ) -> Result<ItemId, TksError> {
         if self.locked {
             return Err(TksError::PermissionDenied);
@@ -395,7 +396,7 @@ impl Collection {
             modified: ts,
             data: Some(ItemData {
                 uuid,
-                data: match secret_session.decrypt(&secret.1, &secret.2) {
+                data: match secret_session.decrypt(&secret.1, &secret.2, sender) {
                     Ok(data) => data,
                     Err(e) => {
                         error!("Cannot decrypt secret: {}", e);
@@ -506,13 +507,14 @@ impl Item {
     pub fn get_secret(
         &self,
         session: &Session,
+        sender: String
     ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
         trace!("get_secret called on '{}'", self.label);
         let data = self.data.as_ref().ok_or_else(|| {
             std::io::Error::new(std::io::ErrorKind::NotFound, format!("Item is locked"))
         })?;
 
-        let (iv, secret) = session.encrypt(&data.data).map_err(|e| {
+        let (iv, secret) = session.encrypt(&data.data, sender).map_err(|e| {
             error!("Error encrypting secret: {}", e);
             std::io::Error::new(
                 std::io::ErrorKind::NotFound,
@@ -527,11 +529,12 @@ impl Item {
         parameters: Vec<u8>,
         value: &Vec<u8>,
         content_type: String,
+        sender: String
     ) -> Result<(), TksError> {
         trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {
             uuid: self.id.uuid,
-            data: session.decrypt(&parameters, value)?,
+            data: session.decrypt(&parameters, value, sender)?,
             content_type,
         });
         Ok(())

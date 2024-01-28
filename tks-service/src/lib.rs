@@ -31,8 +31,8 @@ impl std::fmt::Display for TksError {
             TksError::CryptoError => write!(f, "Crypto error"),
             TksError::IOError(e) => write!(f, "IO error: {}", e),
             TksError::NotFound(_) => write!(f, "Not found"),
-            TksError::SerializationError(_) => write!(f, "Serialization Error"),
-            TksError::PermissionDenied => write!(f, "Collection is locked"),
+            TksError::SerializationError(_) => write!(f, "Serialization error"),
+            TksError::PermissionDenied => write!(f, "Access denied"),
             TksError::Duplicate => write!(f, "Duplicate element"),
             TksError::LockingError => write!(f, "Locking error"),
         }

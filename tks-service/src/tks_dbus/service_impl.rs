@@ -21,6 +21,7 @@ use crate::{convert_prop_map, TksError};
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
+use dbus_crossroads::Context;
 use DBusHandlePath::MultiplePaths;
 
 pub struct ServiceHandle {}
@@ -37,6 +38,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         &mut self,
         algorithm: String,
         input: arg::Variant<Box<dyn arg::RefArg + 'static>>,
+        ctx: &mut Context,
     ) -> Result<
         (
             arg::Variant<Box<dyn arg::RefArg + 'static>>,
@@ -46,19 +48,13 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     > {
         trace!("open_session {}", algorithm);
         let mut sm = SESSION_MANAGER.lock().unwrap();
-        sm.new_session(algorithm, arg::cast(&input.0))
-            .or_else(|e| {
-                error!("Error creating session: {:?}", e);
-                Err(dbus::MethodErr::failed(&format!(
-                    "Error creating session: {:?}",
-                    e
-                )))
-            })
+        Ok(sm
+            .new_session(algorithm, arg::cast(&input.0), ctx.message().sender())
             .and_then(|(sess_id, vector)| {
-                let output = match vector {
-                    Some(e) => arg::Variant(Box::new(e.clone()) as Box<dyn arg::RefArg + 'static>),
-                    None => arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg + 'static>),
-                };
+                let output = vector.map_or_else(
+                    || arg::Variant(Box::new(String::new()) as Box<dyn arg::RefArg + 'static>),
+                    |v| arg::Variant(Box::new(v.clone()) as Box<dyn arg::RefArg + 'static>),
+                );
                 let path = {
                     let dh = sm.sessions.get(sess_id).unwrap().get_dbus_handle();
                     let path = dh.path();
@@ -66,7 +62,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                     path
                 };
                 Ok((output, path.into()))
-            })
+            })?)
     }
 
     /// Create a new collection
@@ -183,8 +179,6 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("unlock {:?}", objects);
-        // TODO: logic with aliases is not correct here; we should instead get paths one by one and
-        // compose the unlocked and locked vectors from each step
         let collection_paths: Vec<_> = objects
             .iter()
             .map(|p| {
@@ -243,22 +237,17 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn get_secrets(
         &mut self,
-        item_paths: Vec<dbus::Path<'static>>,
+        items: Vec<dbus::Path<'static>>,
         session: dbus::Path<'static>,
-    ) -> Result<
-        ::std::collections::HashMap<
-            dbus::Path<'static>,
-            (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
-        >,
-        dbus::MethodErr,
-    > {
-        trace!("get_secrets {:?}", item_paths);
+        ctx: &mut Context,
+    ) -> Result<::std::collections::HashMap<dbus::Path<'static>, (dbus::Path<'static>, Vec<u8>, Vec<u8>, String)>, dbus::MethodErr> {
+        trace!("get_secrets {:?}", items);
         type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
         let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();
 
-        let items: Vec<_> = item_paths.iter().map(|p| ItemImpl::from(p)).collect();
+        let items: Vec<_> = items.iter().map(|p| ItemImpl::from(p)).collect();
         for mut i in items {
-            secrets_map.insert(i.path.clone(), i.get_secret(session.clone())?);
+            secrets_map.insert(i.path.clone(), i.get_secret(session.clone(), ctx)?);
         }
         Ok(secrets_map)
     }

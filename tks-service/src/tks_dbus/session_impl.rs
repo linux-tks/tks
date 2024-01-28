@@ -2,6 +2,9 @@ use crate::tks_dbus::fdo::session::OrgFreedesktopSecretSession;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::{DBusHandle, DBusHandlePath};
+use crate::TksError;
+use dbus::strings::BusName;
+use dbus_crossroads::Context;
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
 use openssl::bn::BigNum;
@@ -9,15 +12,14 @@ use openssl::dh::Dh;
 use openssl::md::Md;
 use openssl::pkey::Id;
 use openssl::pkey_ctx::{HkdfMode, PkeyCtx};
-use openssl::symm::{Cipher, decrypt, encrypt};
-use std::error;
+use openssl::symm::{decrypt, encrypt, Cipher};
 use std::sync::Arc;
 use std::sync::Mutex;
 use vec_map::VecMap;
-use crate::TksError;
 
 pub struct Session {
     pub id: usize,
+    sender: String,
     algorithm: String,
     aes_key_bytes: Option<Vec<u8>>,
 }
@@ -33,8 +35,16 @@ pub struct EncryptedOutput {
 }
 
 impl OrgFreedesktopSecretSession for SessionImpl {
-    fn close(&mut self) -> Result<(), dbus::MethodErr> {
-        SESSION_MANAGER.lock().unwrap().close_session(self.id);
+    fn close(&mut self, ctx: &mut Context) -> Result<(), dbus::MethodErr> {
+        let sender = ctx
+            .message()
+            .sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Sender unknown"))?
+            .to_string();
+        SESSION_MANAGER
+            .lock()
+            .unwrap()
+            .close_session(self.id, sender)?;
         CROSSROADS
             .lock()
             .unwrap()
@@ -77,13 +87,19 @@ impl SessionManager {
         &mut self,
         algorithm: String,
         input: Option<&Vec<u8>>,
+        sender: Option<BusName>,
     ) -> Result<(usize, Option<Vec<u8>>), TksError> {
-        trace!("Creating new session with algorithm {}", algorithm);
+        trace!(
+            "Creating new session with algorithm {} for sender {:?}",
+            algorithm,
+            sender
+        );
         let output;
         let sess_id = {
             let session_num = self.next_session_id;
             self.next_session_id += 1;
-            let mut session = Session::new(session_num, algorithm.clone());
+            let mut session =
+                Session::new(session_num, algorithm.clone(), sender.unwrap().to_string());
             output = session.get_shared_secret(input)?;
             self.sessions.insert(session_num, session);
             debug!("Created session {}", session_num);
@@ -91,9 +107,22 @@ impl SessionManager {
         };
         Ok((sess_id, output))
     }
-    fn close_session(&mut self, id: usize) {
-        debug!("Closing session {}", id);
-        self.sessions.remove(id);
+    fn close_session(&mut self, id: usize, sender: String) -> Result<(), TksError> {
+        trace!("close_session {} from sender {}", id, sender);
+        let session = self
+            .sessions
+            .get(id)
+            .ok_or_else(|| TksError::ParameterError)?;
+        if session.sender == sender {
+            self.sessions.remove(id);
+            Ok(())
+        } else {
+            error!(
+                "Sender {} attempted to close session owned by {}",
+                sender, session.sender
+            );
+            Err(TksError::PermissionDenied)
+        }
     }
 }
 
@@ -108,9 +137,10 @@ const DH_AES: &'static str = "dh-ietf1024-sha256-aes128-cbc-pkcs7";
 const PLAIN: &'static str = "plain";
 
 impl Session {
-    pub fn new(id: usize, algorithm: String) -> Session {
+    pub fn new(id: usize, algorithm: String, sender: String) -> Session {
         Session {
             id,
+            sender,
             algorithm,
             aes_key_bytes: None,
         }
@@ -186,8 +216,16 @@ impl Session {
             }
         }
     }
-    pub fn decrypt(&self, iv: &Vec<u8>, input: &Vec<u8>) -> Result<Vec<u8>, TksError> {
+    pub fn decrypt(
+        &self,
+        iv: &Vec<u8>,
+        input: &Vec<u8>,
+        sender: String,
+    ) -> Result<Vec<u8>, TksError> {
         trace!("Decrypting secret for session {}", self.id);
+        if self.sender != sender {
+            return Err(TksError::PermissionDenied);
+        }
         match self.algorithm.as_str() {
             PLAIN => Ok(input.clone()),
             DH_AES => self
@@ -209,8 +247,11 @@ impl Session {
             }
         }
     }
-    pub fn encrypt(&self, input: &Vec<u8>) -> Result<(Vec<u8>, Vec<u8>), Box<dyn error::Error>> {
+    pub fn encrypt(&self, input: &Vec<u8>, sender: String) -> Result<(Vec<u8>, Vec<u8>), TksError> {
         trace!("Encrypting secret for session {}", self.id);
+        if self.sender != sender {
+            return Err(TksError::PermissionDenied);
+        }
         match self.algorithm.as_str() {
             PLAIN => Ok(([].to_vec(), input.clone())),
             DH_AES => {
@@ -229,7 +270,7 @@ impl Session {
             }
             _ => {
                 error!("Unsupported algorithm: {}", self.algorithm);
-                Err("Unsupported algorithm".into())
+                Err(TksError::ParameterError)
             }
         }
     }

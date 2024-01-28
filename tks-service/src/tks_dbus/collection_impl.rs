@@ -22,6 +22,7 @@ use pinentry::ConfirmationDialog;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
+use dbus_crossroads::Context;
 use uuid::Uuid;
 
 #[derive(Debug, Default, Clone)]
@@ -148,12 +149,16 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
         properties: arg::PropMap,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
+        ctx: &mut Context,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
         trace!(
             "create_item properties: {:?}, secret: ({:?})",
             properties,
             secret
         );
+        let sender = ctx.message().sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Unkown Sender"))?.to_string();
+        let sender_clone = sender.clone();
         let item_label = properties
             .get("org.freedesktop.Secret.Item.Label")
             .ok_or_else(|| dbus::MethodErr::failed(&"No label specified"))
@@ -224,6 +229,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
                                         item_label,
                                         item_attributes,
                                         session_id,
+                                        sender_clone.clone()
                                     )
                                     .map(|_| ())
                                 },
@@ -250,6 +256,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             item_label,
             item_attributes,
             session_id,
+            sender
         )
         .map_err(|e| e.into())
     }
@@ -324,6 +331,7 @@ impl CollectionImpl {
         item_label: String,
         item_attributes: HashMap<String, String>,
         session_id: usize,
+        sender: String,
     ) -> Result<(dbus::Path, dbus::Path), TksError> {
         let sm = SESSION_MANAGER.lock().unwrap();
         let session = sm.sessions.get(session_id).ok_or_else(|| {
@@ -340,6 +348,7 @@ impl CollectionImpl {
                     item_attributes,
                     (session, secret.1, secret.2, secret.3),
                     replace,
+                    sender
                 )
             })
             .and_then(|item_id| {
@@ -370,7 +379,7 @@ impl CollectionImpl {
     pub(crate) fn unlock(&mut self) -> Result<dbus::Path, TksError> {
         STORAGE.lock()?
             .with_collection(self.uuid, |c| {
-                let _ = c.locked.then(|| c.unlock()).unwrap();
+                let _ = c.locked.then(|| c.unlock());
                 Ok(dbus::Path::from("/"))
             })
     }

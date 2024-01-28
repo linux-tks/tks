@@ -3,14 +3,15 @@ use dbus as dbus;
 #[allow(unused_imports)]
 use dbus::arg;
 use dbus_crossroads as crossroads;
+use dbus_crossroads::Context;
 
 pub trait OrgFreedesktopSecretService {
-    fn open_session(&mut self, algorithm: String, input: arg::Variant<Box<dyn arg::RefArg + 'static>>) -> Result<(arg::Variant<Box<dyn arg::RefArg + 'static>>, dbus::Path<'static>), dbus::MethodErr>;
+    fn open_session(&mut self, algorithm: String, input: arg::Variant<Box<dyn arg::RefArg + 'static>>, ctx: &mut Context) -> Result<(arg::Variant<Box<dyn arg::RefArg + 'static>>, dbus::Path<'static>), dbus::MethodErr>;
     fn create_collection(&mut self, properties: arg::PropMap, alias: String) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr>;
     fn search_items(&mut self, attributes: ::std::collections::HashMap<String, String>) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr>;
     fn unlock(&mut self, objects: Vec<dbus::Path<'static>>) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr>;
     fn lock(&mut self, objects: Vec<dbus::Path<'static>>) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr>;
-    fn get_secrets(&mut self, items: Vec<dbus::Path<'static>>, session: dbus::Path<'static>) -> Result<::std::collections::HashMap<dbus::Path<'static>, (dbus::Path<'static>, Vec<u8>, Vec<u8>, String)>, dbus::MethodErr>;
+    fn get_secrets(&mut self, items: Vec<dbus::Path<'static>>, session: dbus::Path<'static>, ctx: &mut Context) -> Result<::std::collections::HashMap<dbus::Path<'static>, (dbus::Path<'static>, Vec<u8>, Vec<u8>, String)>, dbus::MethodErr>;
     fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr>;
     fn set_alias(&mut self, name: String, collection: dbus::Path<'static>) -> Result<(), dbus::MethodErr>;
     fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr>;
@@ -95,8 +96,8 @@ where T: OrgFreedesktopSecretService + Send + 'static
         b.signal::<(dbus::Path<'static>,), _>("CollectionCreated", ("collection",));
         b.signal::<(dbus::Path<'static>,), _>("CollectionDeleted", ("collection",));
         b.signal::<(dbus::Path<'static>,), _>("CollectionChanged", ("collection",));
-        b.method("OpenSession", ("algorithm","input",), ("output","result",), |_, t: &mut T, (algorithm,input,)| {
-            t.open_session(algorithm,input,)
+        b.method("OpenSession", ("algorithm","input",), ("output","result",), |ctx, t: &mut T, (algorithm,input,)| {
+            t.open_session(algorithm,input,ctx)
         });
         b.method("CreateCollection", ("properties","alias",), ("collection","prompt",), |_, t: &mut T, (properties,alias,)| {
             t.create_collection(properties,alias,)
@@ -112,8 +113,8 @@ where T: OrgFreedesktopSecretService + Send + 'static
         b.method("Lock", ("objects",), ("locked","Prompt",), |_, t: &mut T, (objects,)| {
             t.lock(objects,)
         });
-        b.method("GetSecrets", ("items","session",), ("secrets",), |_, t: &mut T, (items,session,)| {
-            t.get_secrets(items,session,)
+        b.method("GetSecrets", ("items","session",), ("secrets",), |ctx, t: &mut T, (items,session,)| {
+            t.get_secrets(items,session,ctx)
                 .map(|x| (x,))
         })
             .annotate("org.qtproject.QtDBus.QtTypeName.Out0", "FreedesktopSecretMap");

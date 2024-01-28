@@ -3,9 +3,10 @@ use dbus;
 #[allow(unused_imports)]
 use dbus::arg;
 use dbus_crossroads as crossroads;
+use dbus_crossroads::Context;
 
 pub trait OrgFreedesktopSecretSession {
-    fn close(&mut self) -> Result<(), dbus::MethodErr>;
+    fn close(&mut self, ctx: &mut Context) -> Result<(), dbus::MethodErr>;
 }
 
 pub fn register_org_freedesktop_secret_session<T>(
@@ -15,6 +16,6 @@ where
     T: OrgFreedesktopSecretSession + Send + 'static,
 {
     cr.register("org.freedesktop.Secret.Session", |b| {
-        b.method("Close", (), (), |_, t: &mut T, ()| t.close());
+        b.method("Close", (), (), |ctx, t: &mut T, ()| t.close(ctx));
     })
 }

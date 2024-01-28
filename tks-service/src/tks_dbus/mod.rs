@@ -180,11 +180,16 @@ pub async fn start_server() {
         panic!("Failed to acquire the service name");
     }
 
+    // let proxy = Proxy::new("org.freedesktop.DBus.Local", "/org/freedesktop/DBus/Local", Default::default(), c);
+    // tokio::spawn( async move {
+    //     proxy.
+    // });
+
     trace!("Start serving");
     c.start_receive(
         MatchRule::new_method_call(),
         Box::new(move |msg, conn| {
-            debug!("Received message: {:?}", msg);
+            trace!("Received message: {:?}", msg);
             {
                 CROSSROADS
                     .lock()
@@ -192,7 +197,15 @@ pub async fn start_server() {
                     .handle_message(msg, conn)
                     .unwrap();
             }
-            trace!("Handled message");
+            debug!("Handled message");
+            true
+        }),
+    );
+    trace!("Start receiving signals");
+    c.start_receive(
+        MatchRule::new_signal("org.freedesktop.DBus.local", "Disconnected"),
+        Box::new(move |msg, _conn|{
+            trace!("Received signal: {:?}", msg);
             true
         }),
     );

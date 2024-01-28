@@ -20,6 +20,7 @@ use log::error;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use dbus_crossroads::Context;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -146,10 +147,13 @@ impl OrgFreedesktopSecretItem for ItemImpl {
     fn get_secret(
         &mut self,
         session: dbus::Path<'static>,
+        ctx: &mut Context,
     ) -> Result<(dbus::Path<'static>, Vec<u8>, Vec<u8>, String), dbus::MethodErr> {
         if self.locked()? {
             return Err(dbus::MethodErr::failed(&"Item is locked"));
         }
+        let sender = ctx.message().sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Unkown sender"))?.to_string();
         let session_id = session
             .split('/')
             .last()
@@ -168,7 +172,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
             .lock()
             .unwrap()
             .with_item(&self.item_id.collection_uuid, &self.item_id.uuid, |item| {
-                let s = item.get_secret(s)?;
+                let s = item.get_secret(s, sender)?;
                 Ok((session, s.1, s.2, s.3.clone()))
             })
             .map_err(|e| e.into())
@@ -176,6 +180,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
     fn set_secret(
         &mut self,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
+        ctx: &mut Context,
     ) -> Result<(), dbus::MethodErr> {
         let session_id = secret
             .0
@@ -184,6 +189,8 @@ impl OrgFreedesktopSecretItem for ItemImpl {
             .unwrap()
             .parse::<usize>()
             .map_err(|_| dbus::MethodErr::failed(&"Invalid session ID"))?;
+        let sender = ctx.message().sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Sender Unknown"))?.to_string();
 
         if self.locked()? {
             return Err(dbus::MethodErr::failed(&"Item is locked"));
@@ -198,7 +205,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
         match STORAGE.lock().unwrap().modify_item(
             &self.item_id.collection_uuid,
             &self.item_id.uuid,
-            |item| item.set_secret(&s, secret.1, &secret.2, secret.3),
+            |item| item.set_secret(&s, secret.1, &secret.2, secret.3, sender),
         ) {
             Ok(_) => {
                 let item_path_clone = self.path().clone();

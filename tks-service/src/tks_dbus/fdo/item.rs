@@ -3,11 +3,12 @@ use dbus as dbus;
 #[allow(unused_imports)]
 use dbus::arg;
 use dbus_crossroads as crossroads;
+use dbus_crossroads::Context;
 
 pub trait OrgFreedesktopSecretItem {
     fn delete(&mut self) -> Result<dbus::Path<'static>, dbus::MethodErr>;
-    fn get_secret(&mut self, session: dbus::Path<'static>) -> Result<(dbus::Path<'static>, Vec<u8>, Vec<u8>, String), dbus::MethodErr>;
-    fn set_secret(&mut self, secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String)) -> Result<(), dbus::MethodErr>;
+    fn get_secret(&mut self, session: dbus::Path<'static>, ctx: &mut Context) -> Result<(dbus::Path<'static>, Vec<u8>, Vec<u8>, String), dbus::MethodErr>;
+    fn set_secret(&mut self, secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String), ctx: &mut Context) -> Result<(), dbus::MethodErr>;
     fn locked(&self) -> Result<bool, dbus::MethodErr>;
     fn attributes(&self) -> Result<::std::collections::HashMap<String, String>, dbus::MethodErr>;
     fn set_attributes(&self, value: ::std::collections::HashMap<String, String>) -> Result<(), dbus::MethodErr>;
@@ -27,13 +28,13 @@ where T: OrgFreedesktopSecretItem + Send + 'static
             t.delete()
                 .map(|x| (x,))
         });
-        b.method("GetSecret", ("session",), ("secret",), |_, t: &mut T, (session,)| {
-            t.get_secret(session,)
+        b.method("GetSecret", ("session",), ("secret",), |ctx, t: &mut T, (session,)| {
+            t.get_secret(session,ctx)
                 .map(|x| (x,))
         })
             .annotate("org.qtproject.QtDBus.QtTypeName.Out0", "FreedesktopSecret");
-        b.method("SetSecret", ("secret",), (), |_, t: &mut T, (secret,)| {
-            t.set_secret(secret,)
+        b.method("SetSecret", ("secret",), (), |ctx, t: &mut T, (secret,)| {
+            t.set_secret(secret,ctx)
         })
             .annotate("org.qtproject.QtDBus.QtTypeName.In0", "FreedesktopSecret");
         b.property::<bool, _>("Locked")
