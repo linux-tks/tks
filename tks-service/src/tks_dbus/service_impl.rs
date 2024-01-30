@@ -240,7 +240,13 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         items: Vec<dbus::Path<'static>>,
         session: dbus::Path<'static>,
         ctx: &mut Context,
-    ) -> Result<::std::collections::HashMap<dbus::Path<'static>, (dbus::Path<'static>, Vec<u8>, Vec<u8>, String)>, dbus::MethodErr> {
+    ) -> Result<
+        ::std::collections::HashMap<
+            dbus::Path<'static>,
+            (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
+        >,
+        dbus::MethodErr,
+    > {
         trace!("get_secrets {:?}", items);
         type Secret = (dbus::Path<'static>, Vec<u8>, Vec<u8>, String);
         let mut secrets_map: HashMap<dbus::Path, Secret> = HashMap::new();

@@ -15,12 +15,12 @@ use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{sanitize_string, DBusHandlePath};
 use dbus::message::SignalArgs;
 use dbus::{MethodErr, Path};
+use dbus_crossroads::Context;
 use lazy_static::lazy_static;
 use log::error;
 use log::{debug, trace};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
-use dbus_crossroads::Context;
 use uuid::Uuid;
 
 #[derive(Debug, Clone, Default)]
@@ -54,8 +54,12 @@ impl ItemImpl {
     pub fn uuid_to_path(uuid: &Uuid) -> dbus::Path<'static> {
         ITEM_HANDLES.lock().unwrap().get(uuid).unwrap().path.clone()
     }
-    pub fn is_default(&self) -> bool { self.item_id.uuid.is_nil() }
-    pub fn is_not_default(&self) -> bool { !self.is_default() }
+    pub fn is_default(&self) -> bool {
+        self.item_id.uuid.is_nil()
+    }
+    pub fn is_not_default(&self) -> bool {
+        !self.is_default()
+    }
 }
 
 impl From<&Item> for ItemImpl {
@@ -152,8 +156,11 @@ impl OrgFreedesktopSecretItem for ItemImpl {
         if self.locked()? {
             return Err(dbus::MethodErr::failed(&"Item is locked"));
         }
-        let sender = ctx.message().sender()
-            .ok_or_else(|| dbus::MethodErr::failed("Unkown sender"))?.to_string();
+        let sender = ctx
+            .message()
+            .sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Unkown sender"))?
+            .to_string();
         let session_id = session
             .split('/')
             .last()
@@ -189,8 +196,11 @@ impl OrgFreedesktopSecretItem for ItemImpl {
             .unwrap()
             .parse::<usize>()
             .map_err(|_| dbus::MethodErr::failed(&"Invalid session ID"))?;
-        let sender = ctx.message().sender()
-            .ok_or_else(|| dbus::MethodErr::failed("Sender Unknown"))?.to_string();
+        let sender = ctx
+            .message()
+            .sender()
+            .ok_or_else(|| dbus::MethodErr::failed("Sender Unknown"))?
+            .to_string();
 
         if self.locked()? {
             return Err(dbus::MethodErr::failed(&"Item is locked"));

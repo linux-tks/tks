@@ -333,7 +333,10 @@ impl Storage {
         let mut collection: Collection = serde_json::from_str(&data)?;
         collection.path = path.as_os_str().to_os_string();
         collection.locked = true;
-        collection.items.iter_mut().for_each(|i: &mut Item| i.id.collection_uuid = collection.uuid);
+        collection
+            .items
+            .iter_mut()
+            .for_each(|i: &mut Item| i.id.collection_uuid = collection.uuid);
         Ok(collection)
     }
 }
@@ -372,7 +375,7 @@ impl Collection {
         properties: HashMap<String, String>,
         secret: (&Session, Vec<u8>, Vec<u8>, String),
         replace: bool,
-        sender:  String,
+        sender: String,
     ) -> Result<ItemId, TksError> {
         if self.locked {
             return Err(TksError::PermissionDenied);
@@ -507,7 +510,7 @@ impl Item {
     pub fn get_secret(
         &self,
         session: &Session,
-        sender: String
+        sender: String,
     ) -> Result<(String, Vec<u8>, Vec<u8>, String), std::io::Error> {
         trace!("get_secret called on '{}'", self.label);
         let data = self.data.as_ref().ok_or_else(|| {
@@ -529,7 +532,7 @@ impl Item {
         parameters: Vec<u8>,
         value: &Vec<u8>,
         content_type: String,
-        sender: String
+        sender: String,
     ) -> Result<(), TksError> {
         trace!("set_secret called on '{}'", self.label);
         self.data = Some(ItemData {

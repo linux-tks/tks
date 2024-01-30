@@ -37,7 +37,10 @@ impl From<DBusHandlePath> for dbus::Path<'static> {
         match p {
             DBusHandlePath::SinglePath(p) => p,
             DBusHandlePath::MultiplePaths(v) => {
-                warn!("This is a DBusPath having multiple paths, returning the first one: {}", v[0]);
+                warn!(
+                    "This is a DBusPath having multiple paths, returning the first one: {}",
+                    v[0]
+                );
                 v[0].clone()
             }
         }
@@ -204,7 +207,7 @@ pub async fn start_server() {
     trace!("Start receiving signals");
     c.start_receive(
         MatchRule::new_signal("org.freedesktop.DBus.local", "Disconnected"),
-        Box::new(move |msg, _conn|{
+        Box::new(move |msg, _conn| {
             trace!("Received signal: {:?}", msg);
             true
         }),

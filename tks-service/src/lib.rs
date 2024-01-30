@@ -2,11 +2,11 @@
 
 extern crate core;
 
-use std::sync::{MutexGuard, PoisonError};
-use dbus::MethodErr;
-use openssl::error::ErrorStack;
-use log::error;
 use crate::storage::Storage;
+use dbus::MethodErr;
+use log::error;
+use openssl::error::ErrorStack;
+use std::sync::{MutexGuard, PoisonError};
 
 pub mod settings;
 pub mod storage;
