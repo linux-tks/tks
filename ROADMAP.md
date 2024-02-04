@@ -24,28 +24,30 @@ NOTE: first release is yet to be done.
 
 - [✔] org.freedesktop.secrets interface specification is implemented by
   tks-service; storage in non-encrypted files
-- [x] tks-client is implemented
 
 ### Milestone 1.1
 
-- [x] Importing of the secrets from KWallet is implemented
+- [x] Yubikey-based encryption is implemented
 
 ### Milestone 1.2
 
-- [x] Importing of the secrets from GNOME Keyring is implemented
+- [x] Importing of the secrets from KWallet is implemented
 
 ### Milestone 1.3
 
-- [x] Importing of the secrets from Pass is implemented
+- [x] Importing of the secrets from GNOME Keyring is implemented
 
 ### Milestone 1.4
+
+- [x] Importing of the secrets from Pass is implemented
+
+### Milestone 1.5
 
 - [x] Importing of the secrets from KeePassX is implemented
 
 ## Milestone 2
 
-- [x] org.freedesktop.secrets interface specification is implemented by
-  tks-service; storage in encrypted files using TPM 2.0 infrastructure
+- [x] storage in encrypted files using TPM 2.0 infrastructure
 
 ### Milestone 2.1
 
