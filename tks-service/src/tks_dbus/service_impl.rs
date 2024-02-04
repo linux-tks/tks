@@ -2,7 +2,7 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
-use crate::tks_dbus::{sanitize_string, DBusHandle};
+use crate::tks_dbus::{DBusHandle, sanitize_string};
 use crate::tks_dbus::{DBusHandlePath, MESSAGE_SENDER};
 use dbus::message::SignalArgs;
 use log;
@@ -16,13 +16,14 @@ use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
 use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::session_impl::SessionImpl;
 use crate::tks_dbus::CROSSROADS;
-use crate::{convert_prop_map, TksError};
+use crate::convert_prop_map;
 
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
 use dbus_crossroads::Context;
 use DBusHandlePath::MultiplePaths;
+use crate::tks_error::TksError;
 
 pub struct ServiceHandle {}
 pub struct ServiceImpl {}

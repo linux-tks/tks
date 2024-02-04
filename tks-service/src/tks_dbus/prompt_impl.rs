@@ -6,7 +6,7 @@ use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
 use crate::tks_dbus::{DBusHandle, DBusHandlePath};
-use crate::TksError;
+use crate::tks_error::TksError;
 use dbus;
 use dbus::arg;
 use dbus::message::SignalArgs;

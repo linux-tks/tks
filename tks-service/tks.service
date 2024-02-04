@@ -1,0 +1,12 @@
+[Unit]
+Description=Launch tks-service
+Wants=dbus.service
+After=dbus.service
+
+[Service]
+#Environment="RUST_LOG=trace"
+#Environment="RUST_BACKTRACE=1"
+ExecStart=tks-service
+
+[Install]
+WantedBy=default.target

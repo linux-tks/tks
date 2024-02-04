@@ -16,7 +16,7 @@ use std::vec::Vec;
 use uuid::Uuid;
 
 use crate::settings::SETTINGS;
-use crate::TksError;
+use crate::tks_error::TksError;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {

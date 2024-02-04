@@ -11,7 +11,7 @@ pub trait OrgFreedesktopSecretCollection {
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr>;
     fn create_item(
-        &self,
+        &mut self,
         properties: arg::PropMap,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,

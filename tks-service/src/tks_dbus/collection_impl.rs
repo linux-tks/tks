@@ -4,14 +4,13 @@ use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemCreated;
 use crate::tks_dbus::item_impl::ItemImpl;
-use crate::tks_dbus::prompt_impl::PromptImpl;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
 use crate::tks_dbus::DBusHandle;
 use crate::tks_dbus::DBusHandlePath::MultiplePaths;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::MESSAGE_SENDER;
-use crate::tks_dbus::{sanitize_string, DBusHandlePath};
-use crate::{register_object, TksError};
+use crate::tks_dbus::{DBusHandlePath, sanitize_string};
+use crate::register_object;
 use arg::cast;
 use dbus::arg::RefArg;
 use dbus::message::SignalArgs;
@@ -19,11 +18,11 @@ use dbus::{arg, Path};
 use dbus_crossroads::Context;
 use lazy_static::lazy_static;
 use log::{debug, error, trace, warn};
-use pinentry::ConfirmationDialog;
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
 use uuid::Uuid;
+use crate::tks_error::TksError;
 
 #[derive(Debug, Default, Clone)]
 pub struct CollectionImpl {
@@ -147,7 +146,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
     // d-feet example call:
     // {"org.freedesktop.Secret.Item.Label":GLib.Variant('s',"test"), "org.freedesktop.Secret.Item.Attributes":GLib.Variant("a{sv}",{"prop1":GLib.Variant('s',"val1"),"prop2":GLib.Variant('s',"val2")})}, ("/",[],[],""),0
     fn create_item(
-        &self,
+        &mut self,
         properties: arg::PropMap,
         secret: (dbus::Path<'static>, Vec<u8>, Vec<u8>, String),
         replace: bool,
@@ -163,7 +162,6 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             .sender()
             .ok_or_else(|| dbus::MethodErr::failed("Unkown Sender"))?
             .to_string();
-        let sender_clone = sender.clone();
         let item_label = properties
             .get("org.freedesktop.Secret.Item.Label")
             .ok_or_else(|| dbus::MethodErr::failed(&"No label specified"))
@@ -200,60 +198,9 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             .unwrap()
             .parse::<usize>()
             .map_err(|_| dbus::MethodErr::failed(&"Invalid session ID"))?;
-        if let Ok(locked) = self.locked() {
-            if locked {
-                debug!(
-                    "Collection '{}' is locked, now preparing prompt to unlock",
-                    self.uuid
-                );
-                // NOTE: here we have a confirmation dialog, but really we should
-                // unlock the collection depending on the disk encryption method;
-                // TKS's preferred method would be to use a TPM, unlocked via the
-                // pam module, but we should also support unlocking with a passphrase.
-                // For the moment, we'll just use a confirmation dialog so we can test the rest of the prompt code.
-                if let Some(mut confirmation) = ConfirmationDialog::with_default_binary() {
-                    confirmation.with_ok("Yes").with_timeout(10);
-                    let uuid = self.uuid.clone();
-                    let self_clone = self.clone();
-                    let prompt = PromptImpl::new(
-                        confirmation,
-                        format!("Unlock collection '{}'?", self.uuid).clone(),
-                        move || {
-                            debug!("Prompt confirmed");
-                            let item_attributes = item_attributes.clone();
-                            let item_label = item_label.clone();
-                            STORAGE.lock().unwrap().with_collection(
-                                uuid,
-                                |collection| -> Result<(), TksError> {
-                                    collection.unlock()?;
-                                    trace!("Creating item after collection unlock");
-                                    CollectionImpl::create_item(
-                                        self_clone.uuid.clone(),
-                                        secret.clone(),
-                                        replace,
-                                        item_label,
-                                        item_attributes,
-                                        session_id,
-                                        sender_clone.clone(),
-                                    )
-                                    .map(|_| ())
-                                },
-                            )
-                        },
-                        None,
-                    );
-                    return Ok((dbus::Path::from("/"), prompt));
-                } else {
-                    error!("Error creating confirmation dialog. Do you have pinentry installed?");
-                    return Err(dbus::MethodErr::failed(
-                        &"Error creating confirmation dialog",
-                    ));
-                };
-            }
-        } else {
-            error!("Unexpected error occured");
-            return Err(dbus::MethodErr::failed(&"Not found"));
-        }
+
+        self.unlock()?;
+
         CollectionImpl::create_item(
             self.uuid,
             secret,
@@ -338,6 +285,7 @@ impl CollectionImpl {
         session_id: usize,
         sender: String,
     ) -> Result<(dbus::Path, dbus::Path), TksError> {
+        trace!("create_item");
         let sm = SESSION_MANAGER.lock().unwrap();
         let session = sm.sessions.get(session_id).ok_or_else(|| {
             std::io::Error::new(

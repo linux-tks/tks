@@ -1,0 +1,13 @@
+# this is the tks-service configuration file
+# it is expected to be placed into $XDG_CONFIG_HOME/io.linux-tks directory
+# usually, that directory epands to ~/.config/io.linux-tks
+#
+# default values are shown below, uncomment to override
+#
+[storage]
+# current tks-service version stores secrets in clear-text, under this folder
+# this may be fine when using full disk encryption, but this version should
+# definitely not be used in a production environement
+#
+#path = "$HOME/.local/share/io.linux-tks/storage"
+

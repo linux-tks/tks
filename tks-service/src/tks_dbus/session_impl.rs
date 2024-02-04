@@ -2,7 +2,7 @@ use crate::tks_dbus::fdo::session::OrgFreedesktopSecretSession;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use crate::tks_dbus::CROSSROADS;
 use crate::tks_dbus::{DBusHandle, DBusHandlePath};
-use crate::TksError;
+use crate::tks_error::TksError;
 use dbus::strings::BusName;
 use dbus_crossroads::Context;
 use lazy_static::lazy_static;

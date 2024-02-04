@@ -45,5 +45,6 @@ uuid = { version = "1.6.1", features = [ "v4", "fast-rng", "macro-diagnostics", 
 vec_map = "0.8.2"
 num-bigint = {  version = "0.4.4", features = ["rand"] }
 rand = "0.8"
+xdg = "2.5.2"
 
 [dev-dependencies]
