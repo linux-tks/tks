@@ -27,7 +27,9 @@ NOTE: first release is yet to be done.
 
 ### Milestone 1.1
 
-- [x] Yubikey-based encryption is implemented
+- [x] Yubikey-derived key is being used to decrypt data storage encrypted by
+  fscrypt
+- [x] the documentation is up to date and contains set-up instructions
 
 ### Milestone 1.2
 
