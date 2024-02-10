@@ -3,8 +3,11 @@ extern crate pretty_env_logger;
 #[macro_use]
 extern crate log;
 use colored::Colorize;
-use std::process::exit;
-use yubikey::{Context, Serial};
+use console::Term;
+use std::io::Read;
+use std::{io, process::exit};
+use yubikey::{Context, Key, Serial, YubiKey};
+use yubikey::piv::SlotId;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -99,10 +102,44 @@ impl YkCmd {
             YkCmd::Enroll(enroll) => enroll.run(),
             YkCmd::List(list) => list.run(),
         }
+        .unwrap_or_else(|e| {
+            debug!("Error: {:?}", e);
+            e.print();
+        })
+    }
+}
+
+type CliResult<T> = Result<T, CliError>;
+
+#[derive(Debug)]
+enum CliError {
+    YubikeyError(yubikey::Error),
+    Cancelled,
+    IoError(std::io::Error),
+}
+
+impl CliError {
+    pub(crate) fn print(&self) {
+        match self {
+            CliError::IoError(e) => println!("IO Error"),
+            CliError::YubikeyError(e) => println!("Yubikey access error"),
+            CliError::Cancelled => println!("Operation cancelled by the user"),
+        }
+    }
+}
+
+impl From<yubikey::Error> for CliError {
+    fn from(err: yubikey::Error) -> Self {
+        CliError::YubikeyError(err)
+    }
+}
+impl From<std::io::Error> for CliError {
+    fn from(value: io::Error) -> Self {
+        CliError::IoError(value)
     }
 }
 impl YkEnrollCmd {
-    fn run(&self) {
+    fn run(&self) -> CliResult<()> {
         println!("{}", "Enrolling YubiKeys".bold());
         print!("  Checking for internet connection... ");
         if let Ok(_) = reqwest::blocking::get("https://www.google.com") {
@@ -115,44 +152,59 @@ impl YkEnrollCmd {
             println!("NO CONNECTION DETECTED");
         }
         println!("  Insert Yubikey and press Enter");
+        let _ = io::stdin().read_line(&mut String::new()).unwrap();
+        let mut yubikey = YubiKey::open()?;
+        let keys = Key::list(&mut yubikey)?
+            .iter()
+            .filter(|k| k.slot() == SlotId::Authentication)
+            .count();
+        if keys > 0 {
+            println!(
+                "  {}: Key {} already contains an Authentication certificate. Overwrite? (y/N)",
+                "WARNING".bold(),
+                yubikey.serial()
+            );
+            let term = Term::stdout();
+            let choice = term.read_char()?;
+            match choice {
+                'y' | 'Y' => println!("  Overwriting key {}", yubikey.serial().to_string().bold()),
+                _ => return Err(CliError::Cancelled),
+            }
+        } else {
+            println!("  {}", "Key is empty.".green());
+        }
+        println!(
+            "  Provisioning key {}...",
+            yubikey.serial().to_string().bold()
+        );
+        Ok(())
     }
 }
 impl YkListCmd {
-    fn run(&self) {
+    fn run(&self) -> CliResult<()> {
         println!("Searching for connected Yubikeys...");
 
-        let mut readers = Context::open().unwrap_or_else(|e| {
-            debug!("couldn't open PC/SC context: {}", e);
-            println!("Cannot open PC/SC daemon");
-            exit(1);
-        });
-
-        let readers_iter = readers.iter().unwrap_or_else(|e| {
-            debug!("couldn't enumerate PC/SC readers: {}", e);
-            println!("Cannot enumerate PC/SC daemon");
-            exit(1);
-        });
+        let mut readers = Context::open()?;
+        let readers_iter = readers.iter()?;
 
         if readers_iter.len() == 0 {
             println!("No Yubikeys detected");
-            exit(1);
+            return Ok(());
         }
 
         for (i, reader) in readers_iter.enumerate() {
             let name = reader.name();
-            let yubikey = match reader.open() {
-                Ok(yk) => yk,
-                Err(_) => continue,
+            if let Ok(yubikey) = reader.open() {
+                let serial = yubikey.serial();
+                println!(
+                    "{}: {} (serial: {})",
+                    (i + 1).to_string().bold(),
+                    name,
+                    serial
+                );
             };
-
-            let serial = yubikey.serial();
-            println!(
-                "{}: {} (serial: {})",
-                (i + 1).to_string().bold(),
-                name,
-                serial
-            );
         }
+        Ok(())
     }
 }
 impl ServiceCmd {
