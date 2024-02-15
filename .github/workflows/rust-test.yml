@@ -23,6 +23,8 @@ jobs:
         override: true
     - name: Pre-requisites
       run: sudo apt install libdbus-1-dev pkg-config libtss2-sys1 libpcsclite-dev
+    - name: Create empty config file
+      run: mkdir -p ~/.config/io.linux-tks/ && touch ~/.config/io.linux-tks/service.toml
     - name: Build
       uses: actions-rs/cargo@v1
       with:
