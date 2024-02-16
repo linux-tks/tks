@@ -212,6 +212,6 @@ pub async fn start_server() {
             true
         }),
     );
-    future::pending::<()>().await;
-    unreachable!();
+    // future::pending::<()>().await;
+    // unreachable!();
 }

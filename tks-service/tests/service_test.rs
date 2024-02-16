@@ -16,15 +16,17 @@ mod tests {
     use regex::Regex;
     use std::env;
     use tks_service::tks_dbus::start_server;
-    use tokio::time::sleep;
     use tokio::time::Duration;
+    use tokio::time::{interval, sleep};
     extern crate log;
     extern crate pretty_env_logger;
+    use futures::executor::block_on;
     use lazy_static::lazy_static;
     use log::{debug, error, info, trace};
     use std::sync::mpsc::{Receiver, Sender};
     use std::sync::Arc;
     use std::sync::Mutex;
+    use std::thread;
     use tks_service::settings::SETTINGS;
 
     type ServiceProxy = nonblock::Proxy<'static, Arc<nonblock::SyncConnection>>;
@@ -39,9 +41,6 @@ mod tests {
             env::set_var("TKS_RUN_MODE", "test");
             env::set_var("RUST_LOG", "debug");
             pretty_env_logger::init();
-
-            let sf = start_server();
-            let _ = tokio::spawn(sf);
 
             let (resource, conn) = connection::new_session_sync().unwrap();
             let _handle = tokio::spawn(async {
@@ -65,7 +64,7 @@ mod tests {
             match self.stable {
                 true => {}
                 false => {
-                    sleep(Duration::from_millis(300)).await;
+                    start_server().await;
                     self.stable = true;
                 }
             }
@@ -78,17 +77,6 @@ mod tests {
             Arc::new(Mutex::new(TestFixtureData::new()));
     }
 
-    macro_rules! connection {
-        () => {
-            TEST_FIXTURE_DATA
-                .lock()
-                .unwrap()
-                .stable()
-                .await
-                .conn
-                .clone()
-        };
-    }
     macro_rules! service_proxy {
         () => {
             TEST_FIXTURE_DATA
