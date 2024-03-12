@@ -10,6 +10,8 @@ then
     exit
 fi
 
+# NOTE: this should be the same as the one specified in tks-service's config
+storage_path="${HOME}/.local/share/io.linux-tks/storage"
 home_fs=$(df -h /home | awk 'NR==2{print $1}')
 
 fscrypt_status=$(fscrypt status)

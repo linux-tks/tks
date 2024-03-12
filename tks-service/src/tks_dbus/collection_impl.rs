@@ -133,7 +133,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid, |collection| {
+            .with_collection(&self.uuid, |collection| {
                 Ok(collection
                     .items
                     .iter()
@@ -216,7 +216,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid.clone(), |collection| {
+            .with_collection(&self.uuid.clone(), |collection| {
                 Ok(collection
                     .items
                     .iter()
@@ -235,7 +235,7 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid.clone(), |collection| Ok(collection.name.clone()))
+            .with_collection(&self.uuid.clone(), |collection| Ok(collection.name.clone()))
             .map_err(|e| {
                 error!("Error retrieving collectioni {}: {}", self.uuid, e);
                 e.into()
@@ -256,21 +256,21 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid, |collection| Ok(collection.locked))
+            .with_collection(&self.uuid, |collection| Ok(collection.locked))
             .map_err(|e| e.into())
     }
     fn created(&self) -> Result<u64, dbus::MethodErr> {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid.clone(), |collection| Ok(collection.created))
+            .with_collection(&self.uuid.clone(), |collection| Ok(collection.created))
             .map_err(|e| e.into())
     }
     fn modified(&self) -> Result<u64, dbus::MethodErr> {
         STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.uuid.clone(), |collection| Ok(collection.modified))
+            .with_collection(&self.uuid.clone(), |collection| Ok(collection.modified))
             .map_err(|e| e.into())
     }
 }
@@ -295,7 +295,7 @@ impl CollectionImpl {
         })?;
         let mut storage = STORAGE.lock()?;
         storage
-            .with_collection(collection_uuid, |collection| {
+            .modify_collection(&collection_uuid, |collection| {
                 collection.create_item(
                     &item_label,
                     item_attributes,
@@ -329,10 +329,13 @@ impl CollectionImpl {
             .map(|h| h.clone())
             .collect())
     }
-    pub(crate) fn unlock(&mut self) -> Result<dbus::Path, TksError> {
-        STORAGE.lock()?.with_collection(self.uuid, |c| {
-            let _ = c.locked.then(|| c.unlock());
-            Ok(dbus::Path::from("/"))
+    pub(crate) fn unlock(&self) -> Result<dbus::Path<'static>, TksError> {
+        let s = STORAGE.lock()?;
+        s.with_collection(&self.uuid, |c| {
+            let p = c.locked.then(|| {
+                s.create_unlock_prompt(&c.uuid)
+            }).unwrap()?;
+            Ok(p)
         })
     }
 }

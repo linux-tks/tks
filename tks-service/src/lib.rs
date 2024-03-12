@@ -1,4 +1,6 @@
 #![feature(iter_array_chunks)]
+#![feature(file_create_new)]
+#![feature(slice_take)]
 
 extern crate core;
 

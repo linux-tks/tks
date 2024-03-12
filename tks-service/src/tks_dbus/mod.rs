@@ -13,7 +13,6 @@ use dbus::channel::Sender;
 use dbus::message::MatchRule;
 use dbus::*;
 use dbus_tokio::connection;
-use futures::future;
 use lazy_static::lazy_static;
 use log::{debug, trace, warn};
 use std::sync::Arc;
@@ -28,8 +27,8 @@ lazy_static! {
 
 #[derive(Clone)]
 pub enum DBusHandlePath {
-    SinglePath(Path<'static>),
-    MultiplePaths(Vec<Path<'static>>),
+    SinglePath(dbus::Path<'static>),
+    MultiplePaths(Vec<dbus::Path<'static>>),
 }
 
 impl From<DBusHandlePath> for dbus::Path<'static> {
@@ -96,13 +95,13 @@ macro_rules! register_object {
                 match $f.path() {
                     DBusHandlePath::SinglePath(p) => {
                         let p = p.to_string();
-                        debug!("Registering {}", p);
+                        trace!("Registering {}", p);
                         cr_lock.insert(p, &[itf], $f);
                     }
                     DBusHandlePath::MultiplePaths(paths) => {
                         for p in paths {
                             let ps = p.to_string();
-                            debug!("Registering {}", ps);
+                            trace!("Registering {}", ps);
                             cr_lock.insert(p, &[itf], $f.clone());
                         }
                     }
@@ -212,6 +211,4 @@ pub async fn start_server() {
             true
         }),
     );
-    // future::pending::<()>().await;
-    // unreachable!();
 }

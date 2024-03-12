@@ -121,7 +121,7 @@ impl OrgFreedesktopSecretItem for ItemImpl {
         match STORAGE
             .lock()
             .unwrap()
-            .with_collection(self.item_id.collection_uuid, |collection| {
+            .modify_collection(&self.item_id.collection_uuid, |collection| {
                 collection.delete_item(&self.item_id.uuid)
             }) {
             Ok(_) => {

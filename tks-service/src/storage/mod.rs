@@ -3,19 +3,20 @@ use lazy_static::lazy_static;
 use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ffi::{OsStr, OsString};
-use std::fs;
+use std::ffi::OsString;
 use std::fs::DirBuilder;
 use std::fs::File;
 use std::io::Read;
-use std::path::PathBuf;
+use std::path::{PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
+use tokio::task::JoinHandle;
 use uuid::Uuid;
 
 use crate::settings::SETTINGS;
+use crate::tks_dbus::prompt_impl::{TksFscryptPrompt, TksPrompt};
 use crate::tks_error::TksError;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -64,13 +65,17 @@ pub struct Collection {
     pub modified: u64,
 
     #[serde(skip)]
-    path: OsString,
+    path: PathBuf,
+    #[serde(skip)]
+    items_path: PathBuf,
     #[serde(skip)]
     pub locked: bool,
+    #[serde(skip)]
+    pending_async: Option<JoinHandle<()>>,
 }
 
 pub struct Storage {
-    path: OsString,
+    backend: Box<dyn StorageBackend + Send>,
     pub collections: Vec<Collection>,
 }
 
@@ -78,38 +83,124 @@ lazy_static! {
     pub static ref STORAGE: Arc<Mutex<Storage>> = Arc::new(Mutex::new(Storage::new()));
 }
 
+enum StorageBackendType {
+    /// Use fscrypt to handle item encryption on disk
+    /// https://github.com/google/fscrypt
+    /// Backend should have been previously commissioned
+    FSCrypt,
+}
+
+trait StorageBackend {
+    fn get_kind(&self) -> StorageBackendType;
+    fn get_metadata_paths(&self) -> Result<Vec<PathBuf>, TksError>;
+    fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError>;
+    fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
+    fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError>;
+}
+
+struct FSCryptBackend {
+    path: OsString,
+    metadata_path: OsString,
+    items_path: OsString,
+    commissioned: bool,
+}
+
+impl FSCryptBackend {
+    fn new(path: OsString) -> Result<FSCryptBackend, TksError> {
+        debug!("Initializing fscrypt storage at {:?}", path);
+        let mut metadata_path = PathBuf::new();
+        metadata_path.push(path.clone());
+        metadata_path.push("metadata");
+        let _ = DirBuilder::new()
+            .recursive(true)
+            .create(metadata_path.clone())?;
+
+        let mut items_path = PathBuf::new();
+        items_path.push(path.clone());
+        items_path.push("items");
+        let _ = DirBuilder::new()
+            .recursive(true)
+            .create(items_path.clone())?;
+
+        let commissioned = false;
+        let backend = FSCryptBackend {
+            path,
+            metadata_path: metadata_path.into(),
+            items_path: items_path.into(),
+            commissioned,
+        };
+        Ok(backend)
+    }
+}
+
+impl StorageBackend for FSCryptBackend {
+    fn get_kind(&self) -> StorageBackendType {
+        StorageBackendType::FSCrypt
+    }
+
+    fn get_metadata_paths(&self) -> Result<Vec<PathBuf>, TksError> {
+        Ok(std::fs::read_dir(self.metadata_path.clone())?
+            .into_iter()
+            .filter(|e| e.is_ok())
+            .map(|p| p.unwrap().path())
+            .filter(|p| p.is_file())
+            .collect())
+    }
+
+    fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError> {
+        let mut collection_path = PathBuf::new();
+        collection_path.push(self.metadata_path.clone());
+        collection_path.push(name);
+        let mut items_path = PathBuf::new();
+        items_path.push(self.items_path.clone());
+        items_path.push(name);
+        Ok((collection_path, items_path))
+    }
+
+    fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError> {
+        if !items_path.starts_with(self.items_path.clone()) {
+            return Err(TksError::InternalError(
+                "Items path not within the correct directory",
+            ));
+        }
+        if !self.commissioned {
+            return Err(TksError::BackendError(format!(
+                "Storage in directory {:?} is not commissioned",
+                self.items_path
+            )));
+        }
+        Ok("".to_string())
+    }
+
+    fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError> {
+        trace!("create_onlock_prompt for {:?}", coll_uuid);
+        Ok(TksFscryptPrompt::new(coll_uuid))
+    }
+}
+
 impl Storage {
     fn new() -> Self {
         let do_create_storage = || {
+            let settings = SETTINGS.lock().map_err(|e| {
+                std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Error getting settings: {}", e),
+                )
+            })?;
+            let backend = Box::new(match settings.storage.kind.as_str() {
+                "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
+                _ => panic!("Unknown storage backend kind specified in the configuration file"),
+            });
+            let collections = backend
+                .as_ref()
+                .get_metadata_paths()?
+                .into_iter()
+                .map(|p| Self::load_collection(&p))
+                .collect::<Result<Vec<_>, _>>()?;
             let mut storage = Storage {
-                path: OsString::from(
-                    SETTINGS
-                        .lock()
-                        .map_err(|e| {
-                            std::io::Error::new(
-                                std::io::ErrorKind::Other,
-                                format!("Error getting settings: {}", e),
-                            )
-                        })?
-                        .storage
-                        .path
-                        .clone(),
-                ),
-                collections: Vec::new(),
+                backend,
+                collections,
             };
-            // check if the storage directory exists
-            // if not, create it
-            let _ = DirBuilder::new()
-                .recursive(true)
-                .create(storage.path.clone())?;
-
-            let paths = std::fs::read_dir(storage.path.clone())?;
-            for path in paths {
-                let collection_path = path?.path();
-                storage
-                    .collections
-                    .push(Self::load_collection(&collection_path)?);
-            }
 
             // look for the default collection and create it if it doesn't exist
             let _ = storage.read_alias("default").or_else(|_| {
@@ -138,14 +229,14 @@ impl Storage {
             ))
     }
 
-    pub fn with_collection<F, T>(&mut self, uuid: Uuid, f: F) -> Result<T, TksError>
+    pub fn with_collection<F, T>(&self, uuid: &Uuid, f: F) -> Result<T, TksError>
     where
-        F: FnOnce(&mut Collection) -> Result<T, TksError>,
+        F: FnOnce(&Collection) -> Result<T, TksError>,
     {
         let mut collection = self
             .collections
-            .iter_mut()
-            .find(|c| c.uuid == uuid)
+            .iter()
+            .find(|c| c.uuid == *uuid)
             .ok_or_else(|| {
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
@@ -155,27 +246,24 @@ impl Storage {
         f(&mut collection)
     }
 
-    pub fn modify_collection<F>(&mut self, uuid: &Uuid, f: F) -> Result<(), TksError>
+    pub fn modify_collection<F, T>(&mut self, uuid: &Uuid, f: F) -> Result<T, TksError>
     where
-        F: FnOnce(&mut Collection) -> Result<(), TksError>,
+        F: FnOnce(&mut Collection) -> Result<T, TksError>,
     {
-        self.collections
+        let result = self
+            .collections
             .iter_mut()
             .find(|c| c.uuid == *uuid)
             .ok_or(TksError::NotFound(
                 format!("Collection '{}' not found", uuid).into(),
             ))
-            .and_then(|collection| {
-                f(collection)?;
-                Ok(collection)
-            })
-            .and_then(|collection| {
-                // TODO the collection name may have changed; in this case, we might need to also
-                // update the collection's path on disk; but for the moment, it should still reload
-                // fine as the correct collection name gets serialized on disk
-                Storage::save_collection(collection)?;
-                Ok(())
-            })
+            .and_then(|c| f(c));
+
+        // TODO the collection name may have changed; in this case, we might need to also
+        // update the collection's path on disk; but for the moment, it should still reload
+        // fine as the correct collection name gets serialized on disk
+        self.save_collection(uuid, false)?;
+        result
     }
 
     /// This performs a read-only operation on a collection item
@@ -197,14 +285,7 @@ impl Storage {
                 std::io::ErrorKind::NotFound,
                 format!("Collection '{}' not found", collection_uuid),
             ))?;
-        let item = collection
-            .items
-            .iter_mut()
-            .find(|i| i.id.uuid == *item_uuid)
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Item '{}' not found", item_uuid),
-            ))?;
+        let item = collection.get_item(item_uuid)?;
         f(item)
     }
 
@@ -225,17 +306,10 @@ impl Storage {
                 error!("Collection not found: {}", collection_uuid);
                 std::io::Error::new(
                     std::io::ErrorKind::NotFound,
-                    format!("Collection not found"),
+                    "Collection not found".to_string(),
                 )
             })?;
-        let mut item = collection
-            .items
-            .iter_mut()
-            .find(|i| i.id.uuid == *item_uuid)
-            .ok_or(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                format!("Item '{}' not found", item_uuid),
-            ))?;
+        let mut item = collection.get_item_mut(item_uuid)?;
         match f(&mut item) {
             Ok(t) => {
                 item.modified = SystemTime::now()
@@ -243,7 +317,7 @@ impl Storage {
                     .unwrap()
                     .as_secs()
                     .into();
-                Storage::save_collection(collection)?;
+                self.save_collection(collection_uuid, false)?;
                 Ok(t)
             }
             Err(e) => Err(e),
@@ -265,38 +339,34 @@ impl Storage {
         alias: &str,
         _properties: &HashMap<String, String>,
     ) -> Result<Uuid, TksError> {
-        let mut collection_path = PathBuf::new();
-        collection_path.push(self.path.clone());
-        collection_path.push(name);
-        let mut coll = Collection::new(name, collection_path.as_os_str())?;
+        let (path, items_path) = self.backend.new_metadata_path(name)?;
+        let mut coll = Collection::new(name, &path, &items_path)?;
         if !alias.is_empty() {
             coll.aliases = Some(vec![alias.to_string()]);
         }
         let uuid = coll.uuid;
-        Self::save_collection(&mut coll)?;
         self.collections.push(coll);
-        trace!(
-            "Created collection '{}' at path '{}'",
-            uuid,
-            collection_path.display()
-        );
+        self.save_collection(&uuid, true)?;
+        trace!("Created collection '{}' at path '{:?}'", uuid, path);
         Ok(uuid)
     }
 
-    fn save_collection(collection: &mut Collection) -> Result<(), TksError> {
-        assert!(!collection.path.is_empty());
-        let _ = DirBuilder::new()
-            .recursive(true)
-            .create(collection.path.clone())?;
-        let mut metadata_path = PathBuf::new();
-        metadata_path.push(collection.path.clone());
-        metadata_path.push("metadata.json");
+    fn save_collection(&mut self, uuid: &Uuid, is_new: bool) -> Result<(), TksError> {
+        let collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.uuid == *uuid)
+            .ok_or_else(|| TksError::NotFound(None))?;
         trace!(
             "Saving collection '{}' to path '{}'",
             collection.name,
-            metadata_path.display()
+            collection.path.display()
         );
-        let mut file = File::create(metadata_path)?;
+        let mut file = if is_new {
+            File::create_new(collection.path.clone())?
+        } else {
+            File::create(collection.path.clone())?
+        };
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -310,11 +380,8 @@ impl Storage {
         collection.modified = ts;
         serde_json::to_writer_pretty(&mut file, collection)?;
         if !collection.locked {
-            let mut items_path = PathBuf::new();
-            items_path.push(collection.path.clone());
-            items_path.push("items.json");
-            debug!("Collection items path: {}", items_path.display());
-            let mut file = File::create(items_path)?;
+            debug!("Collection items path: {}", collection.items_path.display());
+            let mut file = File::create(collection.items_path.clone())?;
             let collection_secrets = collection.get_secrets();
             serde_json::to_writer_pretty(&mut file, &collection_secrets)?;
         }
@@ -323,15 +390,11 @@ impl Storage {
 
     fn load_collection(path: &PathBuf) -> Result<Collection, TksError> {
         trace!("Loading collection from path '{}'", path.display());
-        let mut metadata_path = PathBuf::new();
-        metadata_path.push(path);
-        metadata_path.push("metadata.json");
-
-        let mut file = File::open(metadata_path)?;
+        let mut file = File::open(path)?;
         let mut data = String::new();
         file.read_to_string(&mut data)?;
         let mut collection: Collection = serde_json::from_str(&data)?;
-        collection.path = path.as_os_str().to_os_string();
+        collection.path = path.clone();
         collection.locked = true;
         collection
             .items
@@ -339,10 +402,16 @@ impl Storage {
             .for_each(|i: &mut Item| i.id.collection_uuid = collection.uuid);
         Ok(collection)
     }
+    pub(crate) fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError> {
+        self.backend.unlock_items(items_path)
+    }
+    pub(crate) fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError> {
+        self.backend.create_unlock_prompt(coll_uuid)
+    }
 }
 
 impl Collection {
-    fn new(name: &str, path: &OsStr) -> Result<Collection, TksError> {
+    fn new(name: &str, path: &PathBuf, items_path: &PathBuf) -> Result<Collection, TksError> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -358,12 +427,14 @@ impl Collection {
             default: DEFAULT_NAME == name,
             schema_version: 1,
             name: name.to_string(),
-            path: path.to_os_string(),
+            path: path.clone(),
+            items_path: items_path.clone(),
             items: Vec::new(),
             aliases: None,
             locked: true,
             created: ts,
             modified: ts,
+            pending_async: None,
         };
 
         Ok(collection)
@@ -435,8 +506,21 @@ impl Collection {
             self.items.last().unwrap()
         };
         let item_id = item.id.clone();
-        Storage::save_collection(self)?;
         Ok(item_id)
+    }
+
+    pub fn get_item(&self, uuid: &Uuid) -> Result<&Item, TksError> {
+        self.items
+            .iter()
+            .find(|i| i.id.uuid == *uuid)
+            .ok_or_else(|| TksError::NotFound(None))
+    }
+
+    pub fn get_item_mut(&mut self, uuid: &Uuid) -> Result<&mut Item, TksError> {
+        self.items
+            .iter_mut()
+            .find(|i| i.id.uuid == *uuid)
+            .ok_or_else(|| TksError::NotFound(None))
     }
 
     pub fn delete_item(&mut self, uuid: &Uuid) -> Result<Item, TksError> {
@@ -449,7 +533,6 @@ impl Collection {
             .ok_or_else(|| TksError::NotFound(None))
             .and_then(|i| {
                 let older = self.items.swap_remove(i);
-                Storage::save_collection(self)?;
                 Ok(older)
             })
     }
@@ -469,34 +552,47 @@ impl Collection {
             self.locked = false;
             return Ok(());
         }
-        let mut items_path = PathBuf::new();
-        items_path.push(self.path.clone());
-        items_path.push("items.json");
-        let data = fs::read_to_string(items_path)
-            .ok()
-            .or(Some("".to_string()))
-            .unwrap();
-        let collection_secrets: CollectionSecrets = serde_json::from_str(&data)
-            .ok()
-            .or(Some(CollectionSecrets::new()))
-            .unwrap();
 
-        self.items.iter_mut().for_each(|item| {
-            let _ = collection_secrets
-                .items
-                .iter()
-                .find(|s| s.uuid == item.id.uuid)
-                .ok_or(std::io::Error::new(
-                    // TODO: maybe we should put the service in a fail state if we can't unlock a collection
-                    std::io::ErrorKind::NotFound,
-                    format!("Secrets file does not contain secret for item "),
-                ))
-                .and_then(|s| {
-                    item.data = Some(s.clone());
+        let collection_uuid = self.uuid.clone();
+        let items_path = self.items_path.clone();
+
+        self.pending_async = Some(tokio::spawn(async move {
+            debug!("Performing collection unlock: {}", collection_uuid);
+            let data = STORAGE
+                .lock()
+                .unwrap()
+                .unlock_items(&items_path)
+                .ok()
+                .or(Some("".to_string()))
+                .unwrap();
+            let collection_secrets: CollectionSecrets = serde_json::from_str(&data)
+                .ok()
+                .or(Some(CollectionSecrets::new()))
+                .unwrap();
+
+            let _ = STORAGE
+                .lock()
+                .unwrap()
+                .modify_collection(&collection_uuid, |c| {
+                    c.items.iter_mut().for_each(|item| {
+                        let _ = collection_secrets
+                            .items
+                            .iter()
+                            .find(|s| s.uuid == item.id.uuid)
+                            .ok_or(std::io::Error::new(
+                                // TODO: maybe we should put the service in a fail state if we can't unlock a collection
+                                std::io::ErrorKind::NotFound,
+                                format!("Secrets file does not contain secret for item "),
+                            ))
+                            .and_then(|s| {
+                                item.data = Some(s.clone());
+                                Ok(())
+                            });
+                    });
+                    c.locked = false;
                     Ok(())
                 });
-        });
-        self.locked = false;
+        }));
         Ok(())
     }
     pub fn lock(&mut self) -> Result<(), TksError> {

@@ -7,7 +7,7 @@ use crate::tks_dbus::{DBusHandlePath, MESSAGE_SENDER};
 use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, trace};
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 extern crate pretty_env_logger;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionImpl;
@@ -23,6 +23,7 @@ use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
 use dbus_crossroads::Context;
 use DBusHandlePath::MultiplePaths;
+use crate::tks_dbus::prompt_impl::TksPromptChain;
 use crate::tks_error::TksError;
 
 pub struct ServiceHandle {}
@@ -192,22 +193,28 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             .collect();
         let mut unlocked = Vec::new();
         let no_prompt = dbus::Path::from("/");
-        // let mut prompts = Vec::new();
+        let mut prompts = VecDeque::new();
         for cc in collection_paths {
-            let mut coll = cc.2;
+            let coll = cc.2;
             if coll.is_not_default() {
-                let _ = coll.unlock()?;
-                // if prompt == no_prompt {
-                let p = cc.0.clone();
-                unlocked.push(p);
-                // } else {
-                //     prompts.push(prompt.clone());
-                // }
+                let prompt = coll.unlock()?;
+                let prompt = prompt.clone();
+                if prompt == no_prompt {
+                    let p = cc.0.clone();
+                    unlocked.push(p);
+                } else {
+                    prompts.push_back(prompt.clone());
+                }
             }
         }
-        // debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
+        debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
+        let returned_prompt = match prompts.len() {
+            0 => no_prompt,
+            1 => prompts.pop_front().unwrap(),
+            _ => TksPromptChain::new(prompts),
+        };
         let unlocked = unlocked;
-        Ok((unlocked, no_prompt))
+        Ok((unlocked, returned_prompt))
     }
 
     fn lock(

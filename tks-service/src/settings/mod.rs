@@ -3,7 +3,6 @@ use config::{Config, Environment, File};
 use lazy_static::lazy_static;
 use log::debug;
 use serde_derive::Deserialize;
-use std::env;
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -11,6 +10,8 @@ use std::sync::Mutex;
 #[allow(unused)]
 pub struct Storage {
     pub path: String,
+    /// see [StorageBackendType]
+    pub kind: String,
 }
 
 #[derive(Debug, Deserialize)]
@@ -42,6 +43,7 @@ impl Settings {
             ))
             .add_source(File::with_name("local").required(false))
             .add_source(Environment::with_prefix("tks"))
+            .set_default("storage.backend", "fscrypt")?
             .set_default("storage.path",
                          xdg_dirs.create_data_directory("storage")?
                              .to_str())?

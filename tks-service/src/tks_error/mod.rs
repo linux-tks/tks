@@ -17,6 +17,8 @@ pub enum TksError {
     Duplicate,
     LockingError,
     ConfigurationError(String),
+    InternalError(&'static str),
+    BackendError(String),
 }
 
 impl std::fmt::Display for TksError {
@@ -30,7 +32,9 @@ impl std::fmt::Display for TksError {
             TksError::PermissionDenied => write!(f, "Access denied"),
             TksError::Duplicate => write!(f, "Duplicate element"),
             TksError::LockingError => write!(f, "Locking error"),
-            TksError::ConfigurationError(x) => write!(f, "Configuration error: {}", x)
+            TksError::ConfigurationError(x) => write!(f, "Configuration error: {}", x),
+            TksError::InternalError(x) => { write!(f, "Internal error: {}", x)},
+            TksError::BackendError(x) => { write!(f, "Backend error: {}", x)},
         }
     }
 }
