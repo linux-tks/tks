@@ -1,6 +1,11 @@
+//!
+//! Warning: EXPERIMENTAL
+//!
+//! This is a fscrypt back-end experiment
+//!
 use std::path::PathBuf;
 use uuid::Uuid;
-use log::{debug, trace};
+use log::{debug, trace, warn};
 use std::ffi::OsString;
 use std::fs::DirBuilder;
 use crate::storage::{StorageBackend, StorageBackendType};
@@ -15,8 +20,8 @@ pub struct FSCryptBackend {
 }
 
 impl FSCryptBackend {
-    fn new(path: OsString) -> Result<FSCryptBackend, TksError> {
-        debug!("Initializing fscrypt storage at {:?}", path);
+    pub(crate) fn new(path: OsString) -> Result<FSCryptBackend, TksError> {
+        warn!("Initializing EXPERIMENTAL fscrypt storage at {:?}", path);
         let mut metadata_path = PathBuf::new();
         metadata_path.push(path.clone());
         metadata_path.push("metadata");
