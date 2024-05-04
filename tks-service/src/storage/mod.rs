@@ -3,7 +3,6 @@ use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs::DirBuilder;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -13,12 +12,15 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 use uuid::Uuid;
 use collection::{Collection, Item, ItemData};
+use fscrypt::FSCryptBackend;
 
 use crate::settings::SETTINGS;
-use crate::tks_dbus::prompt_impl::{TksFscryptPrompt};
+use crate::storage::tks_gcm::TksGcmBackend;
 use crate::tks_error::TksError;
 
 pub(crate) mod collection;
+mod fscrypt;
+mod tks_gcm;
 
 #[derive(Serialize, Deserialize, Debug)]
 pub(crate) struct CollectionSecrets {
@@ -37,10 +39,11 @@ lazy_static! {
 }
 
 enum StorageBackendType {
-    /// Use fscrypt to handle item encryption on disk
+    /// Use EXPERIMENTAL fscrypt to handle item encryption on disk
     /// https://github.com/google/fscrypt
     /// Backend should have been previously commissioned
     FSCrypt,
+    TksGcm,
 }
 
 trait StorageBackend {
@@ -49,86 +52,6 @@ trait StorageBackend {
     fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError>;
     fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
     fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError>;
-}
-
-struct FSCryptBackend {
-    path: OsString,
-    metadata_path: OsString,
-    items_path: OsString,
-    commissioned: bool,
-}
-
-impl FSCryptBackend {
-    fn new(path: OsString) -> Result<FSCryptBackend, TksError> {
-        debug!("Initializing fscrypt storage at {:?}", path);
-        let mut metadata_path = PathBuf::new();
-        metadata_path.push(path.clone());
-        metadata_path.push("metadata");
-        let _ = DirBuilder::new()
-            .recursive(true)
-            .create(metadata_path.clone())?;
-
-        let mut items_path = PathBuf::new();
-        items_path.push(path.clone());
-        items_path.push("items");
-        let _ = DirBuilder::new()
-            .recursive(true)
-            .create(items_path.clone())?;
-
-        let commissioned = false;
-        let backend = FSCryptBackend {
-            path,
-            metadata_path: metadata_path.into(),
-            items_path: items_path.into(),
-            commissioned,
-        };
-        Ok(backend)
-    }
-}
-
-impl StorageBackend for FSCryptBackend {
-    fn get_kind(&self) -> StorageBackendType {
-        StorageBackendType::FSCrypt
-    }
-
-    fn get_metadata_paths(&self) -> Result<Vec<PathBuf>, TksError> {
-        Ok(std::fs::read_dir(self.metadata_path.clone())?
-            .into_iter()
-            .filter(|e| e.is_ok())
-            .map(|p| p.unwrap().path())
-            .filter(|p| p.is_file())
-            .collect())
-    }
-
-    fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError> {
-        let mut collection_path = PathBuf::new();
-        collection_path.push(self.metadata_path.clone());
-        collection_path.push(name);
-        let mut items_path = PathBuf::new();
-        items_path.push(self.items_path.clone());
-        items_path.push(name);
-        Ok((collection_path, items_path))
-    }
-
-    fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError> {
-        if !items_path.starts_with(self.items_path.clone()) {
-            return Err(TksError::InternalError(
-                "Items path not within the correct directory",
-            ));
-        }
-        if !self.commissioned {
-            return Err(TksError::BackendError(format!(
-                "Storage in directory {:?} is not commissioned",
-                self.items_path
-            )));
-        }
-        Ok("".to_string())
-    }
-
-    fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError> {
-        trace!("create_onlock_prompt for {:?}", coll_uuid);
-        Ok(TksFscryptPrompt::new(coll_uuid))
-    }
 }
 
 impl Storage {
@@ -142,6 +65,7 @@ impl Storage {
             })?;
             let backend = Box::new(match settings.storage.kind.as_str() {
                 "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
+                "tks_gcm" => TksGcmBackend::new(OsString::from(settings.storage.path.clone()))?,
                 _ => panic!("Unknown storage backend kind specified in the configuration file"),
             });
             let collections = backend
