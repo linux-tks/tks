@@ -13,7 +13,6 @@ use dbus::{arg, Path};
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
 use pinentry::{ConfirmationDialog, MessageDialog, PassphraseInput};
-use rand::distributions::DistMap;
 use secrecy::SecretString;
 use std::collections::{BTreeMap as Map, VecDeque};
 use std::sync::Arc;

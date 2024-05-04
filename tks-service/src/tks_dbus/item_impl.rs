@@ -1,7 +1,7 @@
 // Purpose: Provides an implementation of the DBus interface for a secret item.
 use crate::register_object;
-use crate::storage::Item;
-use crate::storage::ItemId;
+use crate::storage::collection::Item;
+use crate::storage::collection::ItemId;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemChanged;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollectionItemDeleted;

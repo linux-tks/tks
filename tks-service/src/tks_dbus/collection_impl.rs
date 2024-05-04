@@ -1,4 +1,4 @@
-use crate::storage::Collection;
+use crate::storage::collection::Collection;
 use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
 use crate::tks_dbus::fdo::collection::OrgFreedesktopSecretCollection;
