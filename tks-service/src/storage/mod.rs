@@ -3,6 +3,7 @@ use log::{debug, error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -10,6 +11,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
+use dbus::arg::{Append, RefArg};
 use secrecy::SecretString;
 use uuid::Uuid;
 use collection::{Collection, Item, ItemData};
@@ -51,17 +53,19 @@ enum StorageBackendType {
 }
 
 trait SecretsHandler {
-    fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError>;
+  fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError>;
 }
 trait StorageBackend {
     fn get_kind(&self) -> StorageBackendType;
     fn get_metadata_paths(&self) -> Result<Vec<PathBuf>, TksError>;
     fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError>;
+    fn collection_items_path(&self, name: &str) -> Result<PathBuf, TksError>;
     fn get_secrets_handler(&mut self) -> Result<Box<dyn SecretsHandler + '_>, TksError>;
     fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
-    fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError>;
+    fn create_unlock_action(&mut self, coll_uuid: &Uuid, x: bool) -> Result<PromptAction, TksError>;
     fn save_collection_metadata(&mut self, collection: &mut Collection, x: &String, is_new: bool) -> Result<(), TksError>;
     fn save_collection_items(&mut self, collection: &mut Collection, x: &String, x0: &String) -> Result<(), TksError>;
+    fn load_collection_items(&self, collection: &Collection, metadata: &String) -> Result<Vec<u8>, TksError>;
 }
 
 impl Storage {
@@ -89,6 +93,9 @@ impl Storage {
                 backend,
                 collections,
             };
+            for c in storage.collections.iter_mut() {
+                c.items_path = storage.backend.collection_items_path(&c.name)?;
+            }
 
             // look for the default collection and create it if it doesn't exist
             let _ = storage.read_alias("default").or_else(|_| {
@@ -218,9 +225,6 @@ impl Storage {
     /// * `name` - The name of the collection
     /// * `properties` - A HashMap of properties to set on the collection; this version ignores
     /// these properties and this is allowed by the spec
-    /// # Returns
-    /// * `Ok(())` - The collection was created successfully
-    /// * `Err(std::io::Error)` - There was an error creating the collection
     pub fn create_collection(
         &mut self,
         name: &str,
@@ -250,11 +254,6 @@ impl Storage {
             collection.name,
             collection.path.display()
         );
-        // let mut file = if is_new {
-        //     File::create_new(collection.path.clone())?
-        // } else {
-        //     File::create(collection.path.clone())?
-        // };
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -266,9 +265,15 @@ impl Storage {
             .as_secs()
             .into();
         collection.modified = ts;
-        let metadata = serde_json::to_string(&collection)?;
+
+        let mut metadata = serde_json::to_string(&collection)?;
         self.backend.save_collection_metadata(collection, &metadata, is_new)?;
+
         if !collection.locked {
+            // add file paths to the authentication metadata to reduce attack surface
+            metadata.push_str(collection.path.to_str().unwrap());
+            metadata.push_str(collection.items_path.to_str().unwrap());
+
             let collection_secrets = collection.get_secrets();
             let items = serde_json::to_string(&collection_secrets)?;
             self.backend.save_collection_items(collection, &metadata, &items)?;
@@ -293,11 +298,36 @@ impl Storage {
         Ok(collection)
     }
 
-    /// Decrypt the file and returned the decrypted data in a string
-    pub(crate) fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError> {
-        self.backend.unlock_items(items_path)
+    fn unlock_collection(&mut self, coll_uuid: &Uuid) -> Result<(), TksError> {
+        let collection = self
+            .collections
+            .iter_mut()
+            .find(|c| c.uuid == *coll_uuid)
+            .ok_or_else(|| TksError::NotFound(None))?;
+        trace!(
+            "unlock_collection '{}' from path '{}'",
+            collection.name,
+            collection.path.display()
+        );
+
+        // prepare the authentication metadata
+        assert!(collection.items_path.to_str().unwrap().len() >0);
+        let mut metadata = serde_json::to_string(&collection)?;
+        metadata.push_str(collection.path.to_str().unwrap());
+        metadata.push_str(collection.items_path.to_str().unwrap());
+
+        // ask backend to decrypt the items, if any
+        let decrypted_items = self.backend.load_collection_items(collection, &metadata)?;
+        collection.unlock(&decrypted_items)?;
+        Ok(())
     }
+    /// Decrypt the file and returned the decrypted data in a string
     pub(crate) fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
-        self.backend.create_unlock_action(coll_uuid)
+        let collection = self
+            .collections
+            .iter()
+            .find(|c| c.uuid == *coll_uuid)
+            .ok_or_else(|| TksError::NotFound(None))?;
+        self.backend.create_unlock_action(coll_uuid, collection.items.is_empty())
     }
 }

@@ -181,16 +181,25 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("unlock {:?}", objects);
-        let collection_paths: Vec<_> = objects
-            .iter()
-            .map(|p| {
-                let cp: Vec<_> = p.split('/').collect();
-                let cp = cp[0..6].join("/");
-                let cp = dbus::Path::from(cp);
-                let coll = CollectionImpl::from(&cp);
-                (p, cp, coll)
-            })
-            .collect();
+        let collection_paths: Vec<_> = if objects.is_empty() {
+            let default_collection_path = dbus::Path::from("/org/freedesktop/secrets/aliases/default");
+            let mut collection_paths = Vec::new();
+            collection_paths.push(
+            (default_collection_path.clone(), default_collection_path.clone(), CollectionImpl::from(&default_collection_path)));
+            collection_paths
+        } else {
+            let collection_paths = objects
+                .iter()
+                .map(|p| {
+                    let cp: Vec<_> = p.split('/').collect();
+                    let cp = cp[0..6].join("/");
+                    let cp = dbus::Path::from(cp);
+                    let coll = CollectionImpl::from(&cp);
+                    (p.clone(), cp, coll)
+                })
+                .collect();
+            collection_paths
+        };
         let unlocked = Vec::new();
         let no_prompt = dbus::Path::from("/");
         let mut prompts = VecDeque::new();

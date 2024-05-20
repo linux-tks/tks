@@ -2,22 +2,21 @@
 //! Tks specific backend using the AES/GCM item secrets encryption
 //!
 use crate::storage::collection::Collection;
-use crate::storage::{StorageBackend, StorageBackendType, STORAGE, SecretsHandler};
+use crate::storage::{SecretsHandler, StorageBackend, StorageBackendType, STORAGE};
 use crate::tks_dbus::prompt_impl::{PromptAction, PromptDialog};
 use crate::tks_error::TksError;
 use dbus::arg::RefArg;
-use fs::read;
-use std::cell::RefCell;
 use log::{debug, trace};
-use openssl::hash::MessageDigest;
-use openssl::pkcs5::pbkdf2_hmac;
 use secrecy::{ExposeSecret, SecretString};
+use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsString;
 use std::fs;
-use std::fs::DirBuilder;
-use std::path::PathBuf;
+use std::fs::{DirBuilder, File, try_exists};
+use std::path::{MAIN_SEPARATOR, PathBuf};
 use std::rc::Rc;
+use openssl::rand::rand_bytes;
+use openssl::symm::decrypt_aead;
 use uuid::Uuid;
 use StorageBackendType::TksGcm;
 
@@ -25,12 +24,13 @@ pub struct TksGcmBackend {
     path: OsString,
     metadata_path: OsString,
     items_path: OsString,
-    secrets_handler: SecretPasswordHandler,
+    secrets_handler: TksGcmPasswordSecretHandler,
 }
 
-struct SecretPasswordHandler {
+struct TksGcmPasswordSecretHandler {
     salt: Vec<u8>,
     key: Vec<u8>,
+    cipher: openssl::symm::Cipher,
 }
 impl TksGcmBackend {
     pub(crate) fn new(path: OsString) -> Result<TksGcmBackend, TksError> {
@@ -49,7 +49,8 @@ impl TksGcmBackend {
             .recursive(true)
             .create(items_path.clone())?;
 
-        let mut salt_file_path = metadata_path.clone();
+        let mut salt_file_path = path.clone();
+        salt_file_path.push(std::path::MAIN_SEPARATOR_STR);
         salt_file_path.push("salt");
         let salt_check = fs::try_exists(salt_file_path.clone())?;
         let salt = if !salt_check {
@@ -60,21 +61,21 @@ impl TksGcmBackend {
             fs::write(salt_file_path, salt.clone())?;
             salt.clone()
         } else {
-            read(salt_file_path.clone())?
+            fs::read(salt_file_path.clone())?
         };
 
         let backend = TksGcmBackend {
             path,
             metadata_path: metadata_path.into(),
             items_path: items_path.into(),
-            secrets_handler: SecretPasswordHandler{
+            secrets_handler: TksGcmPasswordSecretHandler {
                 salt,
-                key: Vec::new(),
+                key: vec![0u8;32],
+                cipher: openssl::symm::Cipher::aes_256_gcm(),
             },
         };
         Ok(backend)
     }
-
 }
 
 impl StorageBackend for TksGcmBackend {
@@ -101,6 +102,13 @@ impl StorageBackend for TksGcmBackend {
         Ok((collection_path, items_path))
     }
 
+    fn collection_items_path(&self, name: &str) -> Result<PathBuf, TksError> {
+        let mut items_path = PathBuf::new();
+        items_path.push(self.items_path.clone());
+        items_path.push(name);
+        Ok(items_path)
+    }
+
     fn get_secrets_handler(&mut self) -> Result<Box<dyn SecretsHandler + '_>, TksError> {
         Ok(Box::new(&mut self.secrets_handler))
     }
@@ -114,34 +122,21 @@ impl StorageBackend for TksGcmBackend {
         Ok("".to_string())
     }
 
-    fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
-        trace!("create_onlock_prompt for {:?}", coll_uuid);
+    fn create_unlock_action(&mut self, coll_uuid: &Uuid, new_collection: bool) -> Result<PromptAction, TksError> {
+        trace!("create_onlock_action for {:?}", coll_uuid);
+        let confirmation = if new_collection { Some("Confirm") } else { None };
+        let mismatch = if new_collection { Some("Passwords do not match") } else { None };
         Ok(PromptAction {
             coll_uuid: coll_uuid.clone(),
-            dialog: PromptDialog::PassphraseInput("Description", "Prompt", |s, coll_uuid| {
+            dialog: PromptDialog::PassphraseInput("Description", "Prompt", confirmation, mismatch, |s, coll_uuid| {
+                trace!("create_unlock_action: Performing unlock action");
                 let mut storage = STORAGE.lock()?;
                 {
                     let mut secrets_handler = storage.backend.get_secrets_handler()?;
                     secrets_handler.derive_key_from_password(s)?;
                 }
-                let r = storage.modify_collection(coll_uuid, |c| {
-                    let cypher = openssl::symm::Cipher::aes_256_gcm();
-                    let key: Vec<u8> = Vec::new();
-                    let iv: Vec<u8> = Vec::new();
-                    let aad: Vec<u8> = Vec::new();
-                    let tag: Vec<u8> = vec![0u8; 16];
-                    let file_contents = read(c.items_path.clone())?;
-                    let data = openssl::symm::decrypt_aead(
-                        cypher,
-                        &key,
-                        Some(&iv),
-                        &aad,
-                        &file_contents,
-                        &tag,
-                    )?;
-                    Ok(true)
-                })?;
-                Ok(r)
+                storage.unlock_collection(coll_uuid)?;
+                Ok(true)
             }),
         })
     }
@@ -149,32 +144,116 @@ impl StorageBackend for TksGcmBackend {
     fn save_collection_metadata(
         &mut self,
         collection: &mut Collection,
-        x: &String,
-        is_new: bool,
+        metadata: &String,
+        _is_new: bool,
     ) -> Result<(), TksError> {
-        todo!()
+        trace!("save_collection_metadata {:?}", &collection.path);
+        fs::write(&collection.path, metadata)?;
+        Ok(())
     }
 
     fn save_collection_items(
         &mut self,
         collection: &mut Collection,
-        x: &String,
-        x0: &String,
+        metadata: &String,
+        items: &String,
     ) -> Result<(), TksError> {
-        todo!()
+        trace!("save_collection_items {:?}", &collection.items_path);
+        let secrets_handler = &self.secrets_handler;
+        let items_encrypted = secrets_handler.encrypt_aead(metadata, items)?;
+        fs::write(&collection.items_path, items_encrypted)?;
+        Ok(())
+    }
+
+    /// NOTE: this returns an empty vector if no items file is present
+    fn load_collection_items(&self, collection: &Collection, metadata: &String) -> Result<Vec<u8>, TksError> {
+        trace!("load_collection_items {:?}", &collection.items_path);
+
+        let mut encrypted: Vec<u8> = Vec::new();
+        if try_exists(&collection.items_path)? {
+            encrypted = fs::read(&collection.items_path)?;
+            self.secrets_handler.decrypt_aead(metadata, &encrypted)
+        } else {
+            Ok(encrypted)
+        }
     }
 }
 
-impl SecretsHandler for &mut SecretPasswordHandler {
+impl SecretsHandler for &mut TksGcmPasswordSecretHandler {
     fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError> {
-        pbkdf2_hmac(
+        trace!("derive_key_from_password");
+        openssl::pkcs5::pbkdf2_hmac(
             s.expose_secret().as_bytes(),
             &self.salt,
             1024,
-            MessageDigest::sha512(),
+            openssl::hash::MessageDigest::sha512(),
             &mut self.key,
         )?;
         // TODO derive real key from above key using KDF and current timestamp
         Ok(())
+    }
+}
+
+impl TksGcmPasswordSecretHandler {
+    const FILE_SCHEMA_VERSION: u8 = 1;
+    fn encrypt_aead(&self, metadata: &String, items: &String) -> Result<Vec<u8>, TksError> {
+        let mut tag = vec![0u8; 16];
+        let mut iv = [0u8; 12];
+        rand_bytes(&mut iv)?;
+        let ciphertext = openssl::symm::encrypt_aead(
+            self.cipher,
+            &self.key,
+            Some(&iv),
+            metadata.as_ref(),
+            items.as_ref(),
+            &mut tag,
+        )?;
+        // here we build the structure of the items file
+        let mut encrypted: Vec<u8> = Vec::new();
+        encrypted.push(Self::FILE_SCHEMA_VERSION);
+        encrypted.extend_from_slice(&iv);
+        encrypted.extend_from_slice(&tag);
+        encrypted.extend_from_slice(&ciphertext);
+        Ok(encrypted)
+    }
+
+    fn decrypt_aead(&self, metadata: &String, encrypted: &Vec<u8>) -> Result<Vec<u8>, TksError> {
+        let version: &u8 = encrypted
+            .get(0)
+            .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?;
+        let mut tag: Vec<u8> = vec![0u8; 16];
+        let mut iv: Vec<u8> = vec![0u8; 12];
+        let mut cyphertext: Vec<u8> = Vec::new();
+        match version {
+            1 => {
+                iv = encrypted
+                    .get(1..13)
+                    .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?
+                    .into();
+                tag = encrypted
+                    .get(13..29)
+                    .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?
+                    .into();
+                cyphertext = encrypted
+                    .get(29..)
+                    .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?
+                    .into();
+            }
+            _ => {
+                return Err(TksError::SerializationError(
+                    "Unknown file version".to_string(),
+                ))
+            }
+        };
+
+        let decrypted = decrypt_aead(
+            self.cipher,
+            &self.key,
+            Some(&iv),
+            metadata.as_ref(),
+            cyphertext.as_ref(),
+            tag.as_ref()
+        )?;
+        Ok(decrypted)
     }
 }

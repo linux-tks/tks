@@ -70,7 +70,13 @@ macro_rules! next_prompt_id {
 #[derive(Clone, Debug)]
 pub enum PromptDialog {
     PromptMessage(&'static str, &'static str), //  MessageDialog.with_ok(1).show_message(2)
-    PassphraseInput(&'static str, &'static str, fn(SecretString, &Uuid) -> Result<bool, TksError>), // PassphraseInput.with_description(1).with_prompt(2)
+    PassphraseInput(
+        &'static str, // description
+        &'static str, // prompt
+        Option<&'static str>, // confirmation
+        Option<&'static str>, // mismatch message
+        fn(SecretString, &Uuid) -> Result<bool, TksError> // action if user confirms dialog
+    ),
 }
 #[derive(Clone, Debug)]
 pub struct PromptAction {
@@ -90,16 +96,20 @@ impl PromptAction {
                     Err(TksError::NoPinentryBinaryFound)
                 }
             }
-            PromptDialog::PassphraseInput(desc, prompt, action) => {
+            PromptDialog::PassphraseInput(desc, prompt, confirmation, mismatch, action) => {
                 if let Some(mut d) = pinentry::PassphraseInput::with_default_binary() {
-                    let s = d.with_prompt(prompt).with_description(desc).interact()?;
+                    d.with_prompt(prompt).with_description(desc);
+                    if let Some(conf) = confirmation {
+                        d.with_confirmation(conf, mismatch.unwrap());
+                    }
+                    let s = d.interact()?;
                     action(s, &self.coll_uuid)
                 } else {
                     Err(TksError::NoPinentryBinaryFound)
                 }
             }
         }
-        }
+    }
 }
 
 #[derive(Clone)]
@@ -109,8 +119,7 @@ pub struct PromptWithPinentry {
 }
 
 impl PromptWithPinentry {
-    pub fn new(action: PromptAction) -> Result<dbus::Path<'static>, TksError>
-    {
+    pub fn new(action: PromptAction) -> Result<dbus::Path<'static>, TksError> {
         let prompt = PromptWithPinentry {
             prompt_id: next_prompt_id!(),
             action: action.clone(),
@@ -119,7 +128,7 @@ impl PromptWithPinentry {
     }
 }
 
-impl TksPrompt for PromptWithPinentry  {
+impl TksPrompt for PromptWithPinentry {
     fn prompt(&mut self, _window_id: String) -> Result<bool, TksError> {
         Ok(self.action.perform()?)
     }
@@ -222,8 +231,11 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
             );
             PROMPTS.lock().unwrap().remove(&prompt_id);
             tokio::spawn(async move {
-               trace!("unregistering prompt {}", prompt_id);
-                CROSSROADS.lock().unwrap().remove::<PromptHandle>(&prompt_path2);
+                trace!("unregistering prompt {}", prompt_id);
+                CROSSROADS
+                    .lock()
+                    .unwrap()
+                    .remove::<PromptHandle>(&prompt_path2);
             });
         });
         Ok(())
@@ -235,7 +247,10 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
         let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
         tokio::spawn(async move {
             trace!("unregistering prompt {}", prompt_id);
-            CROSSROADS.lock().unwrap().remove::<PromptHandle>(&prompt_path2);
+            CROSSROADS
+                .lock()
+                .unwrap()
+                .remove::<PromptHandle>(&prompt_path2);
         });
         Ok(())
     }
@@ -309,4 +324,3 @@ impl TksPrompt for TksPromptChain {
         Ok(dismissed)
     }
 }
-

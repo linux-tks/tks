@@ -159,6 +159,10 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             properties,
             secret
         );
+        if self.locked()? {
+            debug!("Collection is locked, aborting create_item");
+            return Err(dbus::MethodErr::failed("Collection is locked"));
+        }
         let sender = ctx
             .message()
             .sender()

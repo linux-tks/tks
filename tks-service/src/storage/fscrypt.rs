@@ -86,7 +86,7 @@ impl StorageBackend for FSCryptBackend {
         Ok("".to_string())
     }
 
-    fn create_unlock_action(&self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
+    fn create_unlock_action(&self, coll_uuid: &Uuid, x: bool) -> Result<PromptAction, TksError> {
         trace!("create_onlock_prompt for {:?}", coll_uuid);
         Ok(TksFscryptPrompt::new(coll_uuid))
     }

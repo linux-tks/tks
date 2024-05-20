@@ -2,11 +2,12 @@ use crate::storage::{CollectionSecrets, DEFAULT_NAME};
 use crate::tks_dbus::session_impl::Session;
 use crate::tks_error::TksError;
 use log::{debug, error, trace};
-use secrecy::{ExposeSecret, SecretString};
 use serde_derive::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
+use futures::TryFutureExt;
+use openssl::rand::rand_bytes;
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
@@ -71,6 +72,8 @@ impl Collection {
             })?
             .as_secs()
             .into();
+        let mut iv= vec![0u8; 12];
+        rand_bytes(&mut iv)?;
         let collection = Collection {
             uuid: Uuid::new_v4(),
             default: DEFAULT_NAME == name,
@@ -96,7 +99,9 @@ impl Collection {
         replace: bool,
         sender: String,
     ) -> Result<ItemId, TksError> {
+        trace!("create_item");
         if self.locked {
+            debug!("Collection is locked, aborting create_item");
             return Err(TksError::PermissionDenied);
         }
         let secret_session = secret.0;
@@ -196,16 +201,20 @@ impl Collection {
     }
 
     pub fn unlock(&mut self, data: &Vec<u8>) -> Result<(), TksError> {
+        trace!("unlock - items count = {}, data size = {}", self.items.len(), data.len());
         if !self.locked || self.items.is_empty() {
             self.locked = false;
             return Ok(());
         }
-        debug!("Performing collection unlock: {}", self.uuid);
 
+        if data.len() == 0 {
+            error!("It looks like we received empty deserialization buffer for non empty collection");
+            return Err(TksError::SerializationError("No items file found".to_string()));
+        }
+
+        debug!("Performing collection unlock: {}", self.uuid);
         let collection_secrets: CollectionSecrets = serde_json::from_slice(data)
-            .ok()
-            .or(Some(CollectionSecrets::new()))
-            .unwrap();
+            .map_err(|e| TksError::SerializationError(e.to_string()))?;
 
         for item in self.items.iter_mut() {
             collection_secrets
@@ -213,6 +222,7 @@ impl Collection {
                 .iter()
                 .find(|s| s.uuid == item.id.uuid)
                 .ok_or_else(||
+                    // looks like the items file got out of sync with this collection and this is very bad
                     TksError::ItemNotFound
                 )
                 .and_then(|s| {
