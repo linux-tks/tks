@@ -10,15 +10,19 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
+use secrecy::SecretString;
 use uuid::Uuid;
 use collection::{Collection, Item, ItemData};
+#[cfg(feature = "fscrypt")]
 use fscrypt::FSCryptBackend;
 
 use crate::settings::SETTINGS;
 use crate::storage::tks_gcm::TksGcmBackend;
+use crate::tks_dbus::prompt_impl::{PromptAction};
 use crate::tks_error::TksError;
 
 pub(crate) mod collection;
+#[cfg(feature = "fscrypt")]
 mod fscrypt;
 mod tks_gcm;
 
@@ -46,12 +50,18 @@ enum StorageBackendType {
     TksGcm,
 }
 
+trait SecretsHandler {
+    fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError>;
+}
 trait StorageBackend {
     fn get_kind(&self) -> StorageBackendType;
     fn get_metadata_paths(&self) -> Result<Vec<PathBuf>, TksError>;
     fn new_metadata_path(&self, name: &str) -> Result<(PathBuf, PathBuf), TksError>;
+    fn get_secrets_handler(&mut self) -> Result<Box<dyn SecretsHandler + '_>, TksError>;
     fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
-    fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError>;
+    fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError>;
+    fn save_collection_metadata(&mut self, collection: &mut Collection, x: &String, is_new: bool) -> Result<(), TksError>;
+    fn save_collection_items(&mut self, collection: &mut Collection, x: &String, x0: &String) -> Result<(), TksError>;
 }
 
 impl Storage {
@@ -64,7 +74,8 @@ impl Storage {
                 )
             })?;
             let backend = Box::new(match settings.storage.kind.as_str() {
-                "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
+                // #[cfg(feature = "fscrypt")]
+                // "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
                 "tks_gcm" => TksGcmBackend::new(OsString::from(settings.storage.path.clone()))?,
                 _ => panic!("Unknown storage backend kind specified in the configuration file"),
             });
@@ -239,11 +250,11 @@ impl Storage {
             collection.name,
             collection.path.display()
         );
-        let mut file = if is_new {
-            File::create_new(collection.path.clone())?
-        } else {
-            File::create(collection.path.clone())?
-        };
+        // let mut file = if is_new {
+        //     File::create_new(collection.path.clone())?
+        // } else {
+        //     File::create(collection.path.clone())?
+        // };
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -255,16 +266,18 @@ impl Storage {
             .as_secs()
             .into();
         collection.modified = ts;
-        serde_json::to_writer_pretty(&mut file, collection)?;
+        let metadata = serde_json::to_string(&collection)?;
+        self.backend.save_collection_metadata(collection, &metadata, is_new)?;
         if !collection.locked {
-            debug!("Collection items path: {}", collection.items_path.display());
-            let mut file = File::create(collection.items_path.clone())?;
             let collection_secrets = collection.get_secrets();
-            serde_json::to_writer_pretty(&mut file, &collection_secrets)?;
+            let items = serde_json::to_string(&collection_secrets)?;
+            self.backend.save_collection_items(collection, &metadata, &items)?;
         }
         Ok(())
     }
 
+    /// Loads collection metadata from disk.
+    /// The resulting collection is in a locked state.
     fn load_collection(path: &PathBuf) -> Result<Collection, TksError> {
         trace!("Loading collection from path '{}'", path.display());
         let mut file = File::open(path)?;
@@ -279,10 +292,12 @@ impl Storage {
             .for_each(|i: &mut Item| i.id.collection_uuid = collection.uuid);
         Ok(collection)
     }
+
+    /// Decrypt the file and returned the decrypted data in a string
     pub(crate) fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError> {
         self.backend.unlock_items(items_path)
     }
-    pub(crate) fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError> {
-        self.backend.create_unlock_prompt(coll_uuid)
+    pub(crate) fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
+        self.backend.create_unlock_action(coll_uuid)
     }
 }

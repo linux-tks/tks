@@ -3,6 +3,7 @@ use config::ConfigError;
 use std::sync::{MutexGuard, PoisonError};
 use dbus::MethodErr;
 use openssl::error::ErrorStack;
+use pinentry::Error;
 use crate::storage;
 use crate::storage::Storage;
 
@@ -19,6 +20,9 @@ pub enum TksError {
     ConfigurationError(String),
     InternalError(&'static str),
     BackendError(String),
+    NoPinentryBinaryFound,
+    PinentryError(Error),
+    ItemNotFound,
 }
 
 impl std::fmt::Display for TksError {
@@ -35,6 +39,9 @@ impl std::fmt::Display for TksError {
             TksError::ConfigurationError(x) => write!(f, "Configuration error: {}", x),
             TksError::InternalError(x) => { write!(f, "Internal error: {}", x)},
             TksError::BackendError(x) => { write!(f, "Backend error: {}", x)},
+            TksError::NoPinentryBinaryFound => { write!{f, "No pinentry binary found, please install it."}},
+            TksError::PinentryError(e) => { write!{f, "Pinentry returned error {}", e}},
+            TksError::ItemNotFound => { write!{f, "Item not found upon unlocking collection. Maybe data is corrupted?"}},
         }
     }
 }
@@ -84,5 +91,11 @@ impl From<ConfigError> for TksError {
     fn from(e: ConfigError) -> Self {
         error!("ConfigError {}", e);
         TksError::ConfigurationError(e.to_string())
+    }
+}
+
+impl From<pinentry::Error> for TksError {
+    fn from(e: Error) -> Self {
+        TksError::PinentryError(e)
     }
 }

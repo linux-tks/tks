@@ -1,13 +1,13 @@
-use serde_derive::{Deserialize, Serialize};
-use uuid::Uuid;
-use std::path::PathBuf;
-use tokio::task::JoinHandle;
-use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-use log::{debug, error, trace};
-use crate::storage::{CollectionSecrets, DEFAULT_NAME, STORAGE};
+use crate::storage::{CollectionSecrets, DEFAULT_NAME};
 use crate::tks_dbus::session_impl::Session;
 use crate::tks_error::TksError;
+use log::{debug, error, trace};
+use secrecy::{ExposeSecret, SecretString};
+use serde_derive::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
@@ -53,12 +53,14 @@ pub struct Collection {
     pub(crate) items_path: PathBuf,
     #[serde(skip)]
     pub locked: bool,
-    #[serde(skip)]
-    pending_async: Option<JoinHandle<()>>,
 }
 
 impl Collection {
-    pub(crate) fn new(name: &str, path: &PathBuf, items_path: &PathBuf) -> Result<Collection, TksError> {
+    pub(crate) fn new(
+        name: &str,
+        path: &PathBuf,
+        items_path: &PathBuf,
+    ) -> Result<Collection, TksError> {
         let ts = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|e| {
@@ -81,7 +83,6 @@ impl Collection {
             locked: true,
             created: ts,
             modified: ts,
-            pending_async: None,
         };
 
         Ok(collection)
@@ -194,56 +195,37 @@ impl Collection {
         }
     }
 
-    pub fn unlock(&mut self) -> Result<(), TksError> {
+    pub fn unlock(&mut self, data: &Vec<u8>) -> Result<(), TksError> {
         if !self.locked || self.items.is_empty() {
             self.locked = false;
             return Ok(());
         }
+        debug!("Performing collection unlock: {}", self.uuid);
 
-        let collection_uuid = self.uuid.clone();
-        let items_path = self.items_path.clone();
+        let collection_secrets: CollectionSecrets = serde_json::from_slice(data)
+            .ok()
+            .or(Some(CollectionSecrets::new()))
+            .unwrap();
 
-        self.pending_async = Some(tokio::spawn(async move {
-            debug!("Performing collection unlock: {}", collection_uuid);
-            let data = STORAGE
-                .lock()
-                .unwrap()
-                .unlock_items(&items_path)
-                .ok()
-                .or(Some("".to_string()))
-                .unwrap();
-            let collection_secrets: CollectionSecrets = serde_json::from_str(&data)
-                .ok()
-                .or(Some(CollectionSecrets::new()))
-                .unwrap();
-
-            let _ = STORAGE
-                .lock()
-                .unwrap()
-                .modify_collection(&collection_uuid, |c| {
-                    c.items.iter_mut().for_each(|item| {
-                        let _ = collection_secrets
-                            .items
-                            .iter()
-                            .find(|s| s.uuid == item.id.uuid)
-                            .ok_or(std::io::Error::new(
-                                // TODO: maybe we should put the service in a fail state if we can't unlock a collection
-                                std::io::ErrorKind::NotFound,
-                                format!("Secrets file does not contain secret for item "),
-                            ))
-                            .and_then(|s| {
-                                item.data = Some(s.clone());
-                                Ok(())
-                            });
-                    });
-                    c.locked = false;
+        for item in self.items.iter_mut() {
+            collection_secrets
+                .items
+                .iter()
+                .find(|s| s.uuid == item.id.uuid)
+                .ok_or_else(||
+                    TksError::ItemNotFound
+                )
+                .and_then(|s| {
+                    item.data = Some(s.clone());
                     Ok(())
-                });
-        }));
+                })?;
+        }
+        self.locked = false;
         Ok(())
     }
     pub fn lock(&mut self) -> Result<(), TksError> {
         self.locked = true;
+        // TODO: items should be zeroed out upon free
         self.items.iter_mut().for_each(|item| item.data = None);
         Ok(())
     }

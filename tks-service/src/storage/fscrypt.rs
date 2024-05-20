@@ -5,11 +5,11 @@
 //!
 use std::path::PathBuf;
 use uuid::Uuid;
-use log::{debug, trace, warn};
+use log::{trace, warn};
 use std::ffi::OsString;
 use std::fs::DirBuilder;
-use crate::storage::{StorageBackend, StorageBackendType};
-use crate::tks_dbus::prompt_impl::TksFscryptPrompt;
+use crate::storage::{CollectionUnlockAction, StorageBackend, StorageBackendType};
+use crate::tks_dbus::prompt_impl::{PromptAction, PromptWithPinentry, TksFscryptPrompt};
 use crate::tks_error::TksError;
 
 pub struct FSCryptBackend {
@@ -86,7 +86,7 @@ impl StorageBackend for FSCryptBackend {
         Ok("".to_string())
     }
 
-    fn create_unlock_prompt(&self, coll_uuid: &Uuid) -> Result<dbus::Path<'static>, TksError> {
+    fn create_unlock_action(&self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
         trace!("create_onlock_prompt for {:?}", coll_uuid);
         Ok(TksFscryptPrompt::new(coll_uuid))
     }

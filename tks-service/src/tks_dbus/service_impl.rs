@@ -23,7 +23,7 @@ use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
 use dbus_crossroads::Context;
 use DBusHandlePath::MultiplePaths;
-use crate::tks_dbus::prompt_impl::TksPromptChain;
+use crate::tks_dbus::prompt_impl::{PromptWithPinentry, TksPromptChain};
 use crate::tks_error::TksError;
 
 pub struct ServiceHandle {}
@@ -191,21 +191,14 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                 (p, cp, coll)
             })
             .collect();
-        let mut unlocked = Vec::new();
+        let unlocked = Vec::new();
         let no_prompt = dbus::Path::from("/");
         let mut prompts = VecDeque::new();
         for cc in collection_paths {
             let coll = cc.2;
-            if coll.is_not_default() {
-                let prompt = coll.unlock()?;
-                let prompt = prompt.clone();
-                if prompt == no_prompt {
-                    let p = cc.0.clone();
-                    unlocked.push(p);
-                } else {
-                    prompts.push_back(prompt.clone());
-                }
-            }
+            let unlock_action = STORAGE.lock().unwrap().create_unlock_action(&coll.uuid)?;
+            let prompt = PromptWithPinentry::new(unlock_action)?;
+            prompts.push_back(prompt);
         }
         debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
         let returned_prompt = match prompts.len() {

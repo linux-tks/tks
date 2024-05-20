@@ -21,7 +21,9 @@ use log::{debug, error, trace, warn};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
+use pinentry::MessageDialog;
 use uuid::Uuid;
+use crate::tks_dbus::prompt_impl::PromptWithPinentry;
 use crate::tks_error::TksError;
 
 #[derive(Debug, Default, Clone)]
@@ -199,8 +201,6 @@ impl OrgFreedesktopSecretCollection for CollectionImpl {
             .parse::<usize>()
             .map_err(|_| dbus::MethodErr::failed(&"Invalid session ID"))?;
 
-        self.unlock()?;
-
         CollectionImpl::create_item(
             self.uuid,
             secret,
@@ -328,14 +328,5 @@ impl CollectionImpl {
             .values()
             .map(|h| h.clone())
             .collect())
-    }
-    pub(crate) fn unlock(&self) -> Result<dbus::Path<'static>, TksError> {
-        let s = STORAGE.lock()?;
-        s.with_collection(&self.uuid, |c| {
-            let p = c.locked.then(|| {
-                s.create_unlock_prompt(&c.uuid)
-            }).unwrap()?;
-            Ok(p)
-        })
     }
 }

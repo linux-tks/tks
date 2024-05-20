@@ -12,18 +12,25 @@ use dbus::message::SignalArgs;
 use dbus::{arg, Path};
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
-use pinentry::{ConfirmationDialog, MessageDialog, PassphraseInput};
+use pinentry::{ConfirmationDialog, MessageDialog};
 use secrecy::SecretString;
 use std::collections::{BTreeMap as Map, VecDeque};
 use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
 
+#[derive(Debug, Clone)]
+pub struct PromptHandle {
+    prompt_id: usize,
+}
+
 pub trait TksPrompt {
     fn prompt(&mut self, _window_id: String) -> Result<bool, TksError>;
 }
 
 lazy_static! {
+    // This is the list of the DBus-registered prompts, that are yet to be invoked
+    // by the client applications
     pub static ref PROMPTS: Arc<Mutex<Map<usize, Box<dyn TksPrompt + Send>>>> =
         Arc::new(Mutex::new(Map::new()));
     pub static ref PROMPT_COUNTER: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
@@ -39,21 +46,6 @@ pub trait Dialog {
     fn show(&self, text: &String) -> DialogResult;
 }
 
-#[derive(Debug, Clone)]
-pub struct PromptHandle {
-    prompt_id: usize,
-}
-
-type PromptAction = dyn FnMut() -> Result<(), TksError> + Send;
-
-pub struct PromptWithPinentry {
-    prompt_id: usize,
-    dialog: Box<dyn Dialog + Send>,
-    text: String,
-    on_confirmed: Box<PromptAction>,
-    on_denied: Option<Box<PromptAction>>,
-}
-
 macro_rules! register_prompt {
     ($prompt:expr) => {{
         let handle = $prompt.get_dbus_handle();
@@ -61,7 +53,7 @@ macro_rules! register_prompt {
         PROMPTS
             .lock()
             .unwrap()
-            .insert($prompt.prompt_id, Box::new($prompt));
+            .insert($prompt.prompt_id, Box::new($prompt.clone()));
         register_object!(register_org_freedesktop_secret_prompt, handle);
         path.into()
     }};
@@ -75,61 +67,71 @@ macro_rules! next_prompt_id {
     }};
 }
 
+#[derive(Clone, Debug)]
+pub enum PromptDialog {
+    PromptMessage(&'static str, &'static str), //  MessageDialog.with_ok(1).show_message(2)
+    PassphraseInput(&'static str, &'static str, fn(SecretString, &Uuid) -> Result<bool, TksError>), // PassphraseInput.with_description(1).with_prompt(2)
+}
+#[derive(Clone, Debug)]
+pub struct PromptAction {
+    pub(crate) coll_uuid: Uuid,
+    pub(crate) dialog: PromptDialog,
+}
+
+impl PromptAction {
+    //! returns true if the dialog has been dismissed, false otherwise
+    pub fn perform(&self) -> Result<bool, TksError> {
+        match self.dialog {
+            PromptDialog::PromptMessage(ok, msg) => {
+                if let Some(mut d) = MessageDialog::with_default_binary() {
+                    d.with_ok(ok).show_message(msg).unwrap();
+                    Ok(true)
+                } else {
+                    Err(TksError::NoPinentryBinaryFound)
+                }
+            }
+            PromptDialog::PassphraseInput(desc, prompt, action) => {
+                if let Some(mut d) = pinentry::PassphraseInput::with_default_binary() {
+                    let s = d.with_prompt(prompt).with_description(desc).interact()?;
+                    action(s, &self.coll_uuid)
+                } else {
+                    Err(TksError::NoPinentryBinaryFound)
+                }
+            }
+        }
+        }
+}
+
+#[derive(Clone)]
+pub struct PromptWithPinentry {
+    prompt_id: usize,
+    action: PromptAction,
+}
+
 impl PromptWithPinentry {
-    pub fn new<D, F>(
-        dialog: D,
-        text: String,
-        on_confirmed: F,
-        on_denied: Option<F>,
-    ) -> dbus::Path<'static>
-    where
-        D: Dialog + Send + 'static,
-        F: FnMut() -> Result<(), TksError> + Send + 'static,
+    pub fn new(action: PromptAction) -> Result<dbus::Path<'static>, TksError>
     {
         let prompt = PromptWithPinentry {
             prompt_id: next_prompt_id!(),
-            text,
-            dialog: Box::new(dialog),
-            on_confirmed: Box::new(on_confirmed),
-            on_denied: on_denied.map(|f| Box::new(f) as Box<PromptAction>),
+            action: action.clone(),
         };
         register_prompt!(prompt)
     }
 }
 
-impl TksPrompt for PromptWithPinentry {
+impl TksPrompt for PromptWithPinentry  {
     fn prompt(&mut self, _window_id: String) -> Result<bool, TksError> {
-        let dismissed: bool;
-        match self.dialog.show(&self.text) {
-            DialogResult::Confirmation(x) => {
-                trace!("confirmation is {}", x);
-                dismissed = !x;
-                if x {
-                    (self.on_confirmed)()?
-                } else {
-                    if let Some(f) = &mut self.on_denied {
-                        f()?
-                    }
-                }
-            }
-            DialogResult::Secret(_x) => {
-                trace!("passphrase entered");
-                dismissed = false;
-            }
-            DialogResult::Unused => {
-                trace!("Ingnoring message dialog result");
-                dismissed = false;
-            }
-        }
-        Ok(dismissed)
+        Ok(self.action.perform()?)
     }
 }
 
+#[cfg(feature = "fscrypt")]
 pub struct TksFscryptPrompt {
     prompt_id: usize,
     coll_uuid: Uuid,
 }
 
+#[cfg(feature = "fscrypt")]
 impl TksFscryptPrompt {
     pub fn new(coll_uuid: &Uuid) -> dbus::Path<'static> {
         trace!("new");
@@ -141,6 +143,7 @@ impl TksFscryptPrompt {
     }
 }
 
+#[cfg(feature = "fscrypt")]
 impl TksPrompt for TksFscryptPrompt {
     fn prompt(&mut self, _window_id: String) -> Result<bool, TksError> {
         Ok(false)
@@ -158,6 +161,7 @@ macro_rules! prompt_handle {
         }
     }};
 }
+#[cfg(feature = "fscrypt")]
 impl GetPromptDbusHandle for TksFscryptPrompt {
     fn get_dbus_handle(&self) -> PromptHandle {
         prompt_handle!(self)
@@ -185,6 +189,11 @@ impl DBusHandle for TksPromptChain {
     }
 }
 
+impl From<DBusHandlePath> for Result<dbus::Path<'_>, TksError> {
+    fn from(value: DBusHandlePath) -> Self {
+        Ok(Path::from(value))
+    }
+}
 impl OrgFreedesktopSecretPrompt for PromptHandle {
     fn prompt(&mut self, window_id: String) -> Result<(), dbus::MethodErr> {
         trace!("prompt {}", window_id);
@@ -232,13 +241,13 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
     }
 }
 
-impl Dialog for MessageDialog<'_> {
+impl Dialog for &mut MessageDialog<'_> {
     fn show(&self, text: &String) -> DialogResult {
         self.show_message(text).unwrap();
         DialogResult::Unused
     }
 }
-impl Dialog for PassphraseInput<'_> {
+impl Dialog for pinentry::PassphraseInput<'_> {
     fn show(&self, _text: &String) -> DialogResult {
         DialogResult::Secret(self.interact().unwrap())
     }
@@ -249,6 +258,7 @@ impl Dialog for ConfirmationDialog<'_> {
     }
 }
 
+#[derive(Clone)]
 pub struct TksPromptChain {
     prompts: VecDeque<dbus::Path<'static>>,
     prompt_id: usize,
@@ -299,3 +309,4 @@ impl TksPrompt for TksPromptChain {
         Ok(dismissed)
     }
 }
+

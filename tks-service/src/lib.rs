@@ -1,6 +1,6 @@
 #![feature(iter_array_chunks)]
-#![feature(file_create_new)]
 #![feature(slice_take)]
+#![feature(fs_try_exists)]
 
 extern crate core;
 
