@@ -3,14 +3,14 @@ use dbus;
 #[allow(unused_imports)]
 use dbus::arg;
 use dbus_crossroads as crossroads;
-use dbus_crossroads::Context;
+use dbus_crossroads::{Context, PropContext};
 
 pub trait OrgFreedesktopSecretService {
     fn open_session(
         &mut self,
+        ctx: &mut Context,
         algorithm: String,
         input: arg::Variant<Box<dyn arg::RefArg + 'static>>,
-        ctx: &mut Context,
     ) -> Result<
         (
             arg::Variant<Box<dyn arg::RefArg + 'static>>,
@@ -20,26 +20,30 @@ pub trait OrgFreedesktopSecretService {
     >;
     fn create_collection(
         &mut self,
+        ctx: &mut Context,
         properties: arg::PropMap,
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr>;
     fn search_items(
         &mut self,
+        ctx: &mut Context,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr>;
     fn unlock(
         &mut self,
+        ctx: &mut Context,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr>;
     fn lock(
         &mut self,
+        ctx: &mut Context,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr>;
     fn get_secrets(
         &mut self,
+        ctx: &mut Context,
         items: Vec<dbus::Path<'static>>,
         session: dbus::Path<'static>,
-        ctx: &mut Context,
     ) -> Result<
         ::std::collections::HashMap<
             dbus::Path<'static>,
@@ -47,13 +51,21 @@ pub trait OrgFreedesktopSecretService {
         >,
         dbus::MethodErr,
     >;
-    fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr>;
+    fn read_alias(
+        &mut self,
+        ctx: &mut Context,
+        name: String,
+    ) -> Result<dbus::Path<'static>, dbus::MethodErr>;
     fn set_alias(
         &mut self,
+        ctx: &mut Context,
         name: String,
         collection: dbus::Path<'static>,
     ) -> Result<(), dbus::MethodErr>;
-    fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr>;
+    fn collections(
+        &self,
+        ctx: &mut PropContext,
+    ) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr>;
 }
 
 #[derive(Debug)]
@@ -142,39 +154,39 @@ where
             "OpenSession",
             ("algorithm", "input"),
             ("output", "result"),
-            |ctx, t: &mut T, (algorithm, input)| t.open_session(algorithm, input, ctx),
+            |ctx, t: &mut T, (algorithm, input)| t.open_session(ctx, algorithm, input),
         );
         b.method(
             "CreateCollection",
             ("properties", "alias"),
             ("collection", "prompt"),
-            |_, t: &mut T, (properties, alias)| t.create_collection(properties, alias),
+            |ctx, t: &mut T, (properties, alias)| t.create_collection(ctx, properties, alias),
         )
         .annotate("org.qtproject.QtDBus.QtTypeName.In0", "QVariantMap");
         b.method(
             "SearchItems",
             ("attributes",),
             ("unlocked", "locked"),
-            |_, t: &mut T, (attributes,)| t.search_items(attributes),
+            |ctx, t: &mut T, (attributes,)| t.search_items(ctx, attributes),
         )
         .annotate("org.qtproject.QtDBus.QtTypeName.In0", "StrStrMap");
         b.method(
             "Unlock",
             ("objects",),
             ("unlocked", "prompt"),
-            |_, t: &mut T, (objects,)| t.unlock(objects),
+            |ctx, t: &mut T, (objects,)| t.unlock(ctx, objects),
         );
         b.method(
             "Lock",
             ("objects",),
             ("locked", "Prompt"),
-            |_, t: &mut T, (objects,)| t.lock(objects),
+            |ctx, t: &mut T, (objects,)| t.lock(ctx, objects),
         );
         b.method(
             "GetSecrets",
             ("items", "session"),
             ("secrets",),
-            |ctx, t: &mut T, (items, session)| t.get_secrets(items, session, ctx).map(|x| (x,)),
+            |ctx, t: &mut T, (items, session)| t.get_secrets(ctx, items, session).map(|x| (x,)),
         )
         .annotate(
             "org.qtproject.QtDBus.QtTypeName.Out0",
@@ -184,15 +196,15 @@ where
             "ReadAlias",
             ("name",),
             ("collection",),
-            |_, t: &mut T, (name,)| t.read_alias(name).map(|x| (x,)),
+            |ctx, t: &mut T, (name,)| t.read_alias(ctx, name).map(|x| (x,)),
         );
         b.method(
             "SetAlias",
             ("name", "collection"),
             (),
-            |_, t: &mut T, (name, collection)| t.set_alias(name, collection),
+            |ctx, t: &mut T, (name, collection)| t.set_alias(ctx, name, collection),
         );
         b.property::<Vec<dbus::Path<'static>>, _>("Collections")
-            .get(|_, t| t.collections());
+            .get(|ctx, t| t.collections(ctx));
     })
 }

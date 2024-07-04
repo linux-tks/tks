@@ -11,7 +11,7 @@ use std::collections::{HashMap, VecDeque};
 extern crate pretty_env_logger;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionImpl;
-use crate::tks_dbus::fdo::collection::register_org_freedesktop_secret_collection;
+use crate::tks_dbus::fdo::collection::{OrgFreedesktopSecretCollection, register_org_freedesktop_secret_collection};
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
 use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::session_impl::SessionImpl;
@@ -21,7 +21,7 @@ use crate::convert_prop_map;
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
 use crate::tks_dbus::DBusHandlePath::SinglePath;
 use dbus::arg;
-use dbus_crossroads::Context;
+use dbus_crossroads::{Context, PropContext};
 use DBusHandlePath::MultiplePaths;
 use crate::tks_dbus::prompt_impl::{PromptWithPinentry, TksPromptChain};
 use crate::tks_error::TksError;
@@ -38,9 +38,9 @@ impl DBusHandle for ServiceHandle {
 impl OrgFreedesktopSecretService for ServiceImpl {
     fn open_session(
         &mut self,
+        ctx: &mut Context,
         algorithm: String,
         input: arg::Variant<Box<dyn arg::RefArg + 'static>>,
-        ctx: &mut Context,
     ) -> Result<
         (
             arg::Variant<Box<dyn arg::RefArg + 'static>>,
@@ -74,6 +74,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     /// * `alias` - The alias to use for the collection
     fn create_collection(
         &mut self,
+        ctx: &mut Context,
         properties: arg::PropMap,
         alias: String,
     ) -> Result<(dbus::Path<'static>, dbus::Path<'static>), dbus::MethodErr> {
@@ -133,6 +134,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn search_items(
         &mut self,
+        ctx: &mut Context,
         attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr> {
         trace!("search_items {:?}", attributes);
@@ -179,9 +181,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn unlock(
         &mut self,
+        ctx: &mut Context,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
-        trace!("unlock {:?}", objects);
+        trace!("unlock {:?}, sender: {:?}", objects, ctx.message().sender());
+
+
         let collection_paths: Vec<_> = if objects.is_empty() {
             let default_collection_path = dbus::Path::from("/org/freedesktop/secrets/aliases/default");
             let mut collection_paths = Vec::new();
@@ -226,6 +231,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
 
     fn lock(
         &mut self,
+        ctx: &mut Context,
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("lock {:?}", objects);
@@ -252,9 +258,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn get_secrets(
         &mut self,
+        ctx: &mut Context,
         items: Vec<dbus::Path<'static>>,
         session: dbus::Path<'static>,
-        ctx: &mut Context,
     ) -> Result<
         ::std::collections::HashMap<
             dbus::Path<'static>,
@@ -273,7 +279,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         Ok(secrets_map)
     }
 
-    fn read_alias(&mut self, name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
+    fn read_alias(&mut self,
+                  ctx: &mut Context,
+                  name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         trace!("read_alias {}", name);
         Ok(STORAGE.lock().unwrap().read_alias(&name).map_or_else(
             |_| dbus::Path::from("/"),
@@ -287,6 +295,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     }
     fn set_alias(
         &mut self,
+        ctx: &mut Context,
         _name: String,
         _collection: dbus::Path<'static>,
     ) -> Result<(), dbus::MethodErr> {
@@ -296,7 +305,8 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             "Not implemented"
         )));
     }
-    fn collections(&self) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
+    fn collections(&self, ctx: &mut PropContext) -> Result<Vec<dbus::Path<'static>>,
+        dbus::MethodErr> {
         trace!("collections");
         let cols = CollectionImpl::collections()?
             .iter()
