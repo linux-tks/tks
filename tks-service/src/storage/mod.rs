@@ -62,8 +62,8 @@ trait StorageBackend {
     fn collection_items_path(&self, name: &str) -> Result<PathBuf, TksError>;
     fn get_secrets_handler(&mut self) -> Result<Box<dyn SecretsHandler + '_>, TksError>;
     fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
-    fn create_unlock_action(&mut self, coll_uuid: &Uuid, x: bool) -> Result<PromptAction, TksError>;
-    fn save_collection_metadata(&mut self, collection: &mut Collection, x: &String, is_new: bool) -> Result<(), TksError>;
+    fn create_unlock_action(&mut self, coll_uuid: &Uuid, coll_name: &str) -> Result<PromptAction, TksError>;
+    fn save_collection_metadata(&mut self, collection: &mut Collection, x: &String) -> Result<(), TksError>;
     fn save_collection_items(&mut self, collection: &mut Collection, x: &String, x0: &String) -> Result<(), TksError>;
     fn load_collection_items(&self, collection: &Collection, metadata: &String) -> Result<Vec<u8>, TksError>;
 }
@@ -267,7 +267,7 @@ impl Storage {
         collection.modified = ts;
 
         let mut metadata = serde_json::to_string(&collection)?;
-        self.backend.save_collection_metadata(collection, &metadata, is_new)?;
+        self.backend.save_collection_metadata(collection, &metadata)?;
 
         if !collection.locked {
             // add file paths to the authentication metadata to reduce attack surface
@@ -328,6 +328,6 @@ impl Storage {
             .iter()
             .find(|c| c.uuid == *coll_uuid)
             .ok_or_else(|| TksError::NotFound(None))?;
-        self.backend.create_unlock_action(coll_uuid, collection.items.is_empty())
+        self.backend.create_unlock_action(coll_uuid, &collection.name)
     }
 }

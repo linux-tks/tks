@@ -71,11 +71,11 @@ macro_rules! next_prompt_id {
 pub enum PromptDialog {
     PromptMessage(&'static str, &'static str), //  MessageDialog.with_ok(1).show_message(2)
     PassphraseInput(
-        &'static str, // description
-        &'static str, // prompt
-        Option<&'static str>, // confirmation
-        Option<&'static str>, // mismatch message
-        fn(SecretString, &Uuid) -> Result<bool, TksError> // action if user confirms dialog
+        String,                                            // description
+        String,                                            // prompt
+        Option<String>,                                    // confirmation
+        Option<String>,                                    // mismatch message
+        fn(SecretString, &Uuid) -> Result<bool, TksError>, // action if user confirms dialog
     ),
 }
 #[derive(Clone, Debug)]
@@ -87,7 +87,7 @@ pub struct PromptAction {
 impl PromptAction {
     //! returns true if the dialog has been dismissed, false otherwise
     pub fn perform(&self) -> Result<bool, TksError> {
-        match self.dialog {
+        match &self.dialog {
             PromptDialog::PromptMessage(ok, msg) => {
                 if let Some(mut d) = MessageDialog::with_default_binary() {
                     d.with_ok(ok).show_message(msg).unwrap();
@@ -98,9 +98,12 @@ impl PromptAction {
             }
             PromptDialog::PassphraseInput(desc, prompt, confirmation, mismatch, action) => {
                 if let Some(mut d) = pinentry::PassphraseInput::with_default_binary() {
-                    d.with_prompt(prompt).with_description(desc);
+                    d.with_prompt(prompt.as_str())
+                        .with_description(desc.as_str());
+                    let mis: String;
                     if let Some(conf) = confirmation {
-                        d.with_confirmation(conf, mismatch.unwrap());
+                        mis= mismatch.clone().unwrap();
+                        d.with_confirmation(conf.as_str(), mis.as_str());
                     }
                     let s = d.interact()?;
                     action(s, &self.coll_uuid)

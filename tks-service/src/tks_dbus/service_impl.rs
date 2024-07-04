@@ -82,6 +82,7 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         match alias.as_str() {
             "default" => {
                 // no CollectionCreated signal is emitted for the default collection as it is already there
+                // TODO add any new properties to the existing collection
                 return Ok((
                     dbus::Path::from("/org/freedesktop/secrets/collection/default"),
                     dbus::Path::from("/"),
@@ -200,14 +201,18 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                 .collect();
             collection_paths
         };
-        let unlocked = Vec::new();
+        let mut unlocked = Vec::new();
         let no_prompt = dbus::Path::from("/");
         let mut prompts = VecDeque::new();
         for cc in collection_paths {
             let coll = cc.2;
-            let unlock_action = STORAGE.lock().unwrap().create_unlock_action(&coll.uuid)?;
-            let prompt = PromptWithPinentry::new(unlock_action)?;
-            prompts.push_back(prompt);
+            if coll.locked()? {
+                let unlock_action = STORAGE.lock().unwrap().create_unlock_action(&coll.uuid)?;
+                let prompt = PromptWithPinentry::new(unlock_action)?;
+                prompts.push_back(prompt);
+            } else {
+                unlocked.push(cc.1);
+            }
         }
         debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
         let returned_prompt = match prompts.len() {
