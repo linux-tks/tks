@@ -23,6 +23,8 @@ pub enum TksError {
     NoPinentryBinaryFound,
     PinentryError(Error),
     ItemNotFound,
+    DBusError(String),
+    ContextError(&'static str),
 }
 
 impl std::fmt::Display for TksError {
@@ -42,6 +44,8 @@ impl std::fmt::Display for TksError {
             TksError::NoPinentryBinaryFound => { write!{f, "No pinentry binary found, please install it."}},
             TksError::PinentryError(e) => { write!{f, "Pinentry returned error {}", e}},
             TksError::ItemNotFound => { write!{f, "Item not found upon unlocking collection. Maybe data is corrupted?"}},
+            TksError::DBusError(x) => { write!(f, "DBusError: {}", x)},
+            TksError::ContextError(x) => { write!(f, "ContextError: {}", x)},
         }
     }
 }
@@ -98,4 +102,8 @@ impl From<pinentry::Error> for TksError {
     fn from(e: Error) -> Self {
         TksError::PinentryError(e)
     }
+}
+
+impl From<dbus::Error> for TksError {
+    fn from(e: dbus::Error) -> Self { TksError::DBusError(e.to_string()) }
 }

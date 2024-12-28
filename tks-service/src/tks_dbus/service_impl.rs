@@ -2,29 +2,34 @@ use crate::storage::STORAGE;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretService;
 use crate::tks_dbus::fdo::service::OrgFreedesktopSecretServiceCollectionCreated;
 use crate::tks_dbus::session_impl::SESSION_MANAGER;
-use crate::tks_dbus::{DBusHandle, sanitize_string};
+use crate::tks_dbus::{sanitize_string, DBusHandle};
 use crate::tks_dbus::{DBusHandlePath, MESSAGE_SENDER};
 use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, trace};
 use std::collections::{HashMap, VecDeque};
+use std::ops::Deref;
+
 extern crate pretty_env_logger;
+use crate::convert_prop_map;
 use crate::register_object;
 use crate::tks_dbus::collection_impl::CollectionImpl;
-use crate::tks_dbus::fdo::collection::{OrgFreedesktopSecretCollection, register_org_freedesktop_secret_collection};
+use crate::tks_dbus::fdo::collection::{
+    register_org_freedesktop_secret_collection, OrgFreedesktopSecretCollection,
+};
 use crate::tks_dbus::fdo::session::register_org_freedesktop_secret_session;
 use crate::tks_dbus::item_impl::ItemImpl;
 use crate::tks_dbus::session_impl::SessionImpl;
 use crate::tks_dbus::CROSSROADS;
-use crate::convert_prop_map;
 
+use crate::tks_dbus::client_context::{TksClientOption, TksClientProcess, CLIENT_REGISTRY};
 use crate::tks_dbus::fdo::item::OrgFreedesktopSecretItem;
+use crate::tks_dbus::prompt_impl::{PromptWithPinentry, TksPromptChain};
 use crate::tks_dbus::DBusHandlePath::SinglePath;
+use crate::tks_error::TksError;
 use dbus::arg;
 use dbus_crossroads::{Context, PropContext};
 use DBusHandlePath::MultiplePaths;
-use crate::tks_dbus::prompt_impl::{PromptWithPinentry, TksPromptChain};
-use crate::tks_error::TksError;
 
 pub struct ServiceHandle {}
 pub struct ServiceImpl {}
@@ -185,13 +190,25 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         objects: Vec<dbus::Path<'static>>,
     ) -> Result<(Vec<dbus::Path<'static>>, dbus::Path<'static>), dbus::MethodErr> {
         trace!("unlock {:?}, sender: {:?}", objects, ctx.message().sender());
+        let mut prompts = VecDeque::new();
 
+        let mut binding = CLIENT_REGISTRY.lock().unwrap();
+        let client_opt = binding.retrieve(ctx)?;
+        let client;
+        match client_opt {
+            TksClientOption::Prompt(prompt) => prompts.push_back(dbus::Path::from(prompt)),
+            TksClientOption::Client(c) => client = c.clone(),
+        }
 
         let collection_paths: Vec<_> = if objects.is_empty() {
-            let default_collection_path = dbus::Path::from("/org/freedesktop/secrets/aliases/default");
+            let default_collection_path =
+                dbus::Path::from("/org/freedesktop/secrets/aliases/default");
             let mut collection_paths = Vec::new();
-            collection_paths.push(
-            (default_collection_path.clone(), default_collection_path.clone(), CollectionImpl::from(&default_collection_path)));
+            collection_paths.push((
+                default_collection_path.clone(),
+                default_collection_path.clone(),
+                CollectionImpl::from(&default_collection_path),
+            ));
             collection_paths
         } else {
             let collection_paths = objects
@@ -208,13 +225,12 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         };
         let mut unlocked = Vec::new();
         let no_prompt = dbus::Path::from("/");
-        let mut prompts = VecDeque::new();
         for cc in collection_paths {
             let coll = cc.2;
             if coll.locked()? {
                 let unlock_action = STORAGE.lock().unwrap().create_unlock_action(&coll.uuid)?;
                 let prompt = PromptWithPinentry::new(unlock_action)?;
-                prompts.push_back(prompt);
+                prompts.push_back(dbus::Path::from(prompt));
             } else {
                 unlocked.push(cc.1);
             }
@@ -279,9 +295,11 @@ impl OrgFreedesktopSecretService for ServiceImpl {
         Ok(secrets_map)
     }
 
-    fn read_alias(&mut self,
-                  ctx: &mut Context,
-                  name: String) -> Result<dbus::Path<'static>, dbus::MethodErr> {
+    fn read_alias(
+        &mut self,
+        ctx: &mut Context,
+        name: String,
+    ) -> Result<dbus::Path<'static>, dbus::MethodErr> {
         trace!("read_alias {}", name);
         Ok(STORAGE.lock().unwrap().read_alias(&name).map_or_else(
             |_| dbus::Path::from("/"),
@@ -305,8 +323,10 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             "Not implemented"
         )));
     }
-    fn collections(&self, ctx: &mut PropContext) -> Result<Vec<dbus::Path<'static>>,
-        dbus::MethodErr> {
+    fn collections(
+        &self,
+        ctx: &mut PropContext,
+    ) -> Result<Vec<dbus::Path<'static>>, dbus::MethodErr> {
         trace!("collections");
         let cols = CollectionImpl::collections()?
             .iter()

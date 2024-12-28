@@ -5,6 +5,7 @@ pub mod item_impl;
 pub mod prompt_impl;
 pub mod service_impl;
 pub mod session_impl;
+pub mod client_context;
 
 use crate::tks_dbus::fdo::service::register_org_freedesktop_secret_service;
 use crate::tks_dbus::service_impl::ServiceImpl;

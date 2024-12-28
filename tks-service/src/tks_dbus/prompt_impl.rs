@@ -25,7 +25,8 @@ pub struct PromptHandle {
 }
 
 pub trait TksPrompt {
-    fn prompt(&mut self, _window_id: String) -> Result<bool, TksError>;
+    fn prompt(&self, _window_id: String) -> Result<bool, TksError>;
+    fn dismiss(&self) -> Result<(), TksError>;
 }
 
 lazy_static! {
@@ -55,7 +56,7 @@ macro_rules! register_prompt {
             .unwrap()
             .insert($prompt.prompt_id, Box::new($prompt.clone()));
         register_object!(register_org_freedesktop_secret_prompt, handle);
-        path.into()
+        path
     }};
 }
 
@@ -69,19 +70,25 @@ macro_rules! next_prompt_id {
 
 #[derive(Clone, Debug)]
 pub enum PromptDialog {
-    PromptMessage(&'static str, &'static str), //  MessageDialog.with_ok(1).show_message(2)
+    PromptMessage(String, String), //  MessageDialog.with_ok(1).show_message(2)
     PassphraseInput(
-        String,                                            // description
-        String,                                            // prompt
-        Option<String>,                                    // confirmation
-        Option<String>,                                    // mismatch message
-        fn(SecretString, &Uuid) -> Result<bool, TksError>, // action if user confirms dialog
+        String,                                     // description
+        String,                                     // prompt
+        Option<String>,                             // confirmation
+        Option<String>,                             // mismatch message
+        fn(SecretString) -> Result<bool, TksError>, // action if user confirms dialog
     ),
 }
 #[derive(Clone, Debug)]
 pub struct PromptAction {
-    pub(crate) coll_uuid: Uuid,
     pub(crate) dialog: PromptDialog,
+}
+
+impl PromptAction {
+    pub(crate) fn dismiss(&self) -> Result<(), TksError> {
+        debug!("PromptAction dismiss");
+        Ok(())
+    }
 }
 
 impl PromptAction {
@@ -102,11 +109,11 @@ impl PromptAction {
                         .with_description(desc.as_str());
                     let mis: String;
                     if let Some(conf) = confirmation {
-                        mis= mismatch.clone().unwrap();
+                        mis = mismatch.clone().unwrap();
                         d.with_confirmation(conf.as_str(), mis.as_str());
                     }
                     let s = d.interact()?;
-                    action(s, &self.coll_uuid)
+                    action(s)
                 } else {
                     Err(TksError::NoPinentryBinaryFound)
                 }
@@ -127,13 +134,17 @@ impl PromptWithPinentry {
             prompt_id: next_prompt_id!(),
             action: action.clone(),
         };
-        register_prompt!(prompt)
+        Ok(register_prompt!(prompt).into())
     }
 }
 
 impl TksPrompt for PromptWithPinentry {
-    fn prompt(&mut self, _window_id: String) -> Result<bool, TksError> {
+    fn prompt(&self, _window_id: String) -> Result<bool, TksError> {
         Ok(self.action.perform()?)
+    }
+
+    fn dismiss(&self) -> Result<(), TksError> {
+        self.action.dismiss()
     }
 }
 
@@ -157,8 +168,12 @@ impl TksFscryptPrompt {
 
 #[cfg(feature = "fscrypt")]
 impl TksPrompt for TksFscryptPrompt {
-    fn prompt(&mut self, _window_id: String) -> Result<bool, TksError> {
+    fn prompt(&self, _window_id: String) -> Result<bool, TksError> {
         Ok(false)
+    }
+
+    fn dismiss(&self) -> Result<(), TksError> {
+        todo!()
     }
 }
 
@@ -211,7 +226,7 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
         trace!("prompt {}", window_id);
 
         let dismissed: bool;
-        if let Some(prompt) = PROMPTS.lock().unwrap().get_mut(&self.prompt_id) {
+        if let Some(prompt) = PROMPTS.lock().unwrap().get(&self.prompt_id) {
             dismissed = prompt.prompt(window_id)?;
         } else {
             error!("prompt not found");
@@ -245,6 +260,13 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
     }
     fn dismiss(&mut self) -> Result<(), dbus::MethodErr> {
         trace!("dismiss {}", self.prompt_id);
+        if let Some(prompt) = PROMPTS.lock().unwrap().get(&self.prompt_id) {
+            prompt.dismiss()?
+        } else {
+            error!("prompt not found");
+            return Err(dbus::MethodErr::failed("could not dismiss unknown prompt"));
+        };
+
         let prompt_path = self.path().clone();
         let prompt_id = self.prompt_id;
         let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
@@ -288,7 +310,41 @@ impl TksPromptChain {
             prompts,
             prompt_id: next_prompt_id!(),
         };
-        register_prompt!(prompt)
+        register_prompt!(prompt).into()
+    }
+
+    fn invoke_prompts(&self, window_id: Option<String>, dismissed: bool) -> Result<bool, TksError> {
+        let mut dismissed = dismissed;
+        assert!(dismissed || window_id.is_some());
+        for prompt_path in &self.prompts {
+            let parts = prompt_path.split('/');
+            match parts.count() {
+                5 => {
+                    let id: usize = (prompt_path.split('/').nth(4).unwrap()).parse().unwrap();
+                    dismissed |= PROMPTS.lock().unwrap().get(&id).map_or_else(
+                        || {
+                            Err(TksError::NotFound(Some(format!(
+                                "Prompt not registered: {}",
+                                prompt_path
+                            ))))
+                        },
+                        |p| {
+                            if dismissed {
+                                p.dismiss();
+                                Ok(dismissed)
+                            } else {
+                                Ok(p.prompt(window_id.clone().unwrap())?)
+                            }
+                        },
+                    )?;
+                }
+                _ => {
+                    debug!("Incorrect prompt path received {:?}", prompt_path);
+                    return Err(TksError::NotFound(Some(prompt_path.to_string())));
+                }
+            }
+        }
+        Ok(dismissed)
     }
 }
 
@@ -297,33 +353,12 @@ macro_rules! tks_prompt_from_path {
 }
 
 impl TksPrompt for TksPromptChain {
-    fn prompt(&mut self, window_id: String) -> Result<bool, TksError> {
-        let mut dismissed = false;
-        for prompt_path in &self.prompts {
-            // let tks_prompt = tks_prompt_from_path!(prompt_path).ok_or_else(|| {
-            //     TksError::NotFound(Some(format!("Prompt not registered: {}", prompt_path)))
-            // })?;
-            let parts = prompt_path.split('/');
-            let mut prompts = PROMPTS.lock().unwrap();
-            let tks_prompt = match parts.count() {
-                1 => None,
-                5 => {
-                    let id: usize = (prompt_path.split('/').nth(4).unwrap()).parse().unwrap();
-                    prompts.get_mut(&id)
-                }
-                _ => {
-                    debug!("Incorrect prompt path received {:?}", prompt_path);
-                    None
-                }
-            }
-            .ok_or_else(|| {
-                TksError::NotFound(Some(format!("Prompt not registered: {}", prompt_path)))
-            })?;
-            dismissed |= tks_prompt.prompt(window_id.clone())?;
-            if dismissed {
-                break;
-            }
-        }
-        Ok(dismissed)
+    fn prompt(&self, window_id: String) -> Result<bool, TksError> {
+        self.invoke_prompts(Some(window_id), false)
+    }
+
+    fn dismiss(&self) -> Result<(), TksError> {
+        debug!("dismiss the prompt chain");
+        self.invoke_prompts(None, true).map(|_| {})
     }
 }

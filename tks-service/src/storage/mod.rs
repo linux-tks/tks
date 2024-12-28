@@ -1,9 +1,8 @@
 use lazy_static::lazy_static;
-use log::{debug, error, info, trace};
+use log::{error, info, trace};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -11,7 +10,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
-use dbus::arg::{Append, RefArg};
+use dbus::arg::{RefArg};
 use secrecy::SecretString;
 use uuid::Uuid;
 use collection::{Collection, Item, ItemData};
@@ -321,7 +320,7 @@ impl Storage {
         collection.unlock(&decrypted_items)?;
         Ok(())
     }
-    /// Decrypt the file and returned the decrypted data in a string
+
     pub(crate) fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
         let collection = self
             .collections

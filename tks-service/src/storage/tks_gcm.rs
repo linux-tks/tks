@@ -1,6 +1,8 @@
 //!
 //! Tks specific backend using the AES/GCM item secrets encryption
 //!
+#![feature(fs_try_exists)]
+use std::fs;
 use crate::storage::collection::Collection;
 use crate::storage::tks_gcm::TksGcmPasswordSecretHandlerState::{KeyAvailable, Locked, NotCommissioned};
 use crate::storage::{SecretsHandler, StorageBackend, StorageBackendType, STORAGE};
@@ -14,9 +16,7 @@ use secrecy::{ExposeSecret, SecretString};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ffi::OsString;
-use std::fs;
-use std::fs::{try_exists, DirBuilder, File};
-use std::path::{PathBuf, MAIN_SEPARATOR};
+use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::rc::Rc;
 use uuid::Uuid;
 use StorageBackendType::TksGcm;
@@ -51,21 +51,21 @@ impl TksGcmBackend {
         let mut metadata_path = PathBuf::new();
         metadata_path.push(path.clone());
         metadata_path.push("metadata");
-        let _ = DirBuilder::new()
+        let _ = fs::DirBuilder::new()
             .recursive(true)
             .create(metadata_path.clone())?;
 
         let mut items_path = PathBuf::new();
         items_path.push(path.clone());
         items_path.push("items");
-        let _ = DirBuilder::new()
+        let _ = fs::DirBuilder::new()
             .recursive(true)
             .create(items_path.clone())?;
 
         let mut salt_file_path = path.clone();
         salt_file_path.push(std::path::MAIN_SEPARATOR_STR);
         salt_file_path.push("salt");
-        let salt_check = fs::try_exists(salt_file_path.clone())?;
+        let salt_check = Path::new(&salt_file_path).exists();
         let secret_state: TksGcmPasswordSecretHandlerState;
         let salt = if !salt_check {
             trace!("Initializing salt file {:?}", salt_file_path);
@@ -197,20 +197,21 @@ impl StorageBackend for TksGcmBackend {
             None
         };
         Ok(PromptAction {
-            coll_uuid: coll_uuid.clone(),
             dialog: PromptDialog::PassphraseInput(
                 description,
                 "Password".to_string(),
                 confirmation,
                 mismatch,
-                |s, coll_uuid| {
+                |s| {
                     trace!("create_unlock_action: Performing unlock action");
                     let mut storage = STORAGE.lock()?;
                     {
                         let mut secrets_handler = storage.backend.get_secrets_handler()?;
                         secrets_handler.derive_key_from_password(s)?;
                     }
-                    storage.unlock_collection(coll_uuid)?;
+                    assert!(false); // do we still need unlocking on
+                    // individual collections? here we have refactoring WIP
+                    // storage.unlock_collection(coll_uuid)?;
                     Ok(true)
                 },
             ),
@@ -249,7 +250,7 @@ impl StorageBackend for TksGcmBackend {
         trace!("load_collection_items {:?}", &collection.items_path);
 
         let mut encrypted: Vec<u8> = Vec::new();
-        if try_exists(&collection.items_path)? {
+        if Path::new(&collection.items_path).exists() {
             encrypted = fs::read(&collection.items_path)?;
             self.secrets_handler.decrypt_aead(metadata, &encrypted)
         } else {
