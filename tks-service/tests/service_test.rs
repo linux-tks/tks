@@ -2,7 +2,7 @@ mod fdo;
 
 // Running these tests require the presence of an active DBus session bus.
 // Also, no other service on the DBus should offer org.freeedesktop.secrets.
-// Using a DBus session mock obbject would enable running these tests without tinkering with the
+// Using a DBus session mock object would enable running these tests without tinkering with the
 // SUT's DBus configuration.
 //
 #[cfg(test)]

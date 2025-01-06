@@ -1,7 +1,6 @@
 //!
 //! Tks specific backend using the AES/GCM item secrets encryption
 //!
-#![feature(fs_try_exists)]
 use crate::settings::{Settings, Storage};
 use crate::storage::collection::Collection;
 use crate::storage::tks_gcm::TksGcmPasswordSecretHandlerState::{

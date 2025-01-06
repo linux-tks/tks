@@ -194,10 +194,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
 
         let mut binding = CLIENT_REGISTRY.lock().unwrap();
         let client_opt = binding.retrieve(ctx)?;
-        let client;
         match client_opt {
             TksClientOption::Prompt(prompt) => prompts.push_back(dbus::Path::from(prompt)),
-            TksClientOption::Client(c) => client = c.clone(),
+            TksClientOption::Client(_) => {}
         }
 
         let collection_paths: Vec<_> = if objects.is_empty() {

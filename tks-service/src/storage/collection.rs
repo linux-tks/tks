@@ -280,8 +280,3 @@ impl Item {
     }
 }
 
-impl CollectionSecrets {
-    pub fn new() -> CollectionSecrets {
-        CollectionSecrets { items: Vec::new() }
-    }
-}

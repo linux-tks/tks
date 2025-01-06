@@ -74,11 +74,6 @@ macro_rules! next_prompt_id {
     }};
 }
 
-trait ConfirmedAction {
-    /// to keep logic consistent with the prompts, this returns `true` when action is dismissed
-    fn confirmed(&self) -> bool;
-}
-
 #[derive(Clone, Debug)]
 pub enum ConfirmationMessageActionParam {
     ConfirmNewClient(OsString)
@@ -144,7 +139,7 @@ impl PromptAction {
             PromptDialog::ConfirmationMessage(yes, no, confirmation, action_param, action) => {
                 if let Some(mut input) = ConfirmationDialog::with_default_binary() {
                     let dismissed = !input.with_ok(yes).with_cancel(no).confirm(confirmation)?;
-                    if (dismissed) {
+                    if dismissed {
                         trace!("User dismissed confirmation '{}", confirmation);
                         Ok(dismissed)
                     } else {
@@ -320,7 +315,6 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
 
         let prompt_path = self.path().clone();
         let prompt_id = self.prompt_id;
-        let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
         tokio::spawn(async move {
             trace!("sending prompt completed signal");
             let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();

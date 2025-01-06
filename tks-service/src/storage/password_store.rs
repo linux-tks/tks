@@ -65,7 +65,7 @@ impl PasswordStoreBackend {
         if !fs::exists(collection_path.clone())? {
             let coll = Collection::new(crate::storage::DEFAULT_NAME,
                                        &collection_path, &self.path)?;
-            let mut metadata = serde_json::to_string(&coll)?;
+            let metadata = serde_json::to_string(&coll)?;
             self.save_collection_metadata(&coll.path, &metadata)?;
         }
 

@@ -180,7 +180,7 @@ impl TksClientProcess {
         loop {
             let mut chunk = vec![0u8; 1024];
             let n = exe_file.read(&mut chunk)?;
-            if (n == 0) {
+            if n == 0 {
                 break;
             };
             hasher.update(chunk.as_slice());
