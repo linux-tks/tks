@@ -1,8 +1,12 @@
+use collection::{Collection, Item, ItemData};
+use dbus::arg::RefArg;
+#[cfg(feature = "fscrypt")]
+use fscrypt::FSCryptBackend;
 use lazy_static::lazy_static;
 use log::{error, info, trace};
+use secrecy::SecretString;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::ffi::OsString;
 use std::fs::File;
 use std::io::Read;
 use std::path::PathBuf;
@@ -10,21 +14,18 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
-use dbus::arg::{RefArg};
-use secrecy::SecretString;
 use uuid::Uuid;
-use collection::{Collection, Item, ItemData};
-#[cfg(feature = "fscrypt")]
-use fscrypt::FSCryptBackend;
 
 use crate::settings::SETTINGS;
+use crate::storage::password_store::PasswordStoreBackend;
 use crate::storage::tks_gcm::TksGcmBackend;
-use crate::tks_dbus::prompt_impl::{PromptAction};
+use crate::tks_dbus::prompt_impl::PromptAction;
 use crate::tks_error::TksError;
 
 pub(crate) mod collection;
 #[cfg(feature = "fscrypt")]
 mod fscrypt;
+mod password_store;
 mod tks_gcm;
 
 #[derive(Serialize, Deserialize, Debug)]
@@ -49,10 +50,11 @@ enum StorageBackendType {
     /// Backend should have been previously commissioned
     FSCrypt,
     TksGcm,
+    PasswordStore,
 }
 
 trait SecretsHandler {
-  fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError>;
+    fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError>;
 }
 trait StorageBackend {
     fn get_kind(&self) -> StorageBackendType;
@@ -61,10 +63,28 @@ trait StorageBackend {
     fn collection_items_path(&self, name: &str) -> Result<PathBuf, TksError>;
     fn get_secrets_handler(&mut self) -> Result<Box<dyn SecretsHandler + '_>, TksError>;
     fn unlock_items(&self, items_path: &PathBuf) -> Result<String, TksError>;
-    fn create_unlock_action(&mut self, coll_uuid: &Uuid, coll_name: &str) -> Result<PromptAction, TksError>;
-    fn save_collection_metadata(&mut self, collection: &mut Collection, x: &String) -> Result<(), TksError>;
-    fn save_collection_items(&mut self, collection: &mut Collection, x: &String, x0: &String) -> Result<(), TksError>;
-    fn load_collection_items(&self, collection: &Collection, metadata: &String) -> Result<Vec<u8>, TksError>;
+    fn create_unlock_action(
+        &mut self,
+        coll_uuid: &Uuid,
+        coll_name: &str,
+    ) -> Result<PromptAction, TksError>;
+    fn is_locked(&self) -> Result<bool, TksError>;
+    fn save_collection_metadata(
+        &mut self,
+        coll_path: &PathBuf,
+        x: &String,
+    ) -> Result<(), TksError>;
+    fn save_collection_items(
+        &mut self,
+        coll_items_path: &PathBuf,
+        aad: &String,
+        item_data: &String,
+    ) -> Result<(), TksError>;
+    fn load_collection_items(
+        &self,
+        collection: &Collection,
+        aad: &String,
+    ) -> Result<Vec<u8>, TksError>;
 }
 
 impl Storage {
@@ -76,17 +96,22 @@ impl Storage {
                     format!("Error getting settings: {}", e),
                 )
             })?;
-            let backend = Box::new(match settings.storage.kind.as_str() {
-                // #[cfg(feature = "fscrypt")]
-                // "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
-                "tks_gcm" => TksGcmBackend::new(OsString::from(settings.storage.path.clone()))?,
-                _ => panic!("Unknown storage backend kind specified in the configuration file"),
-            });
+            let backend: Box<dyn StorageBackend + Send + 'static> =
+                match settings.storage.kind.as_str() {
+                    // #[cfg(feature = "fscrypt")]
+                    // "fscrypt" => FSCryptBackend::new(OsString::from(settings.storage.path.clone()))?,
+                    "tks_gcm" => Box::new(TksGcmBackend::new(settings.storage.clone())?),
+                    "password-store" => {
+                        Box::new(PasswordStoreBackend::new(settings.storage.clone())?)
+                    }
+
+                    _ => panic!("Unknown storage backend kind specified in the configuration file"),
+                };
             let collections = backend
                 .as_ref()
                 .get_metadata_paths()?
                 .into_iter()
-                .map(|p| Self::load_collection(&p))
+                .map(|p| Storage::load_collection(&p))
                 .collect::<Result<Vec<_>, _>>()?;
             let mut storage = Storage {
                 backend,
@@ -266,16 +291,19 @@ impl Storage {
         collection.modified = ts;
 
         let mut metadata = serde_json::to_string(&collection)?;
-        self.backend.save_collection_metadata(collection, &metadata)?;
+        self.backend
+            .save_collection_metadata(&collection.path, &metadata)?;
 
         if !collection.locked {
             // add file paths to the authentication metadata to reduce attack surface
-            metadata.push_str(collection.path.to_str().unwrap());
-            metadata.push_str(collection.items_path.to_str().unwrap());
+            let mut aad = collection.uuid.to_string();
+            aad.push_str(collection.path.to_str().unwrap());
+            aad.push_str(collection.items_path.to_str().unwrap());
 
             let collection_secrets = collection.get_secrets();
             let items = serde_json::to_string(&collection_secrets)?;
-            self.backend.save_collection_items(collection, &metadata, &items)?;
+            self.backend
+                .save_collection_items(&collection.items_path, &aad, &items)?;
         }
         Ok(())
     }
@@ -310,23 +338,36 @@ impl Storage {
         );
 
         // prepare the authentication metadata
-        assert!(collection.items_path.to_str().unwrap().len() >0);
-        let mut metadata = serde_json::to_string(&collection)?;
-        metadata.push_str(collection.path.to_str().unwrap());
-        metadata.push_str(collection.items_path.to_str().unwrap());
+        assert!(collection.items_path.to_str().unwrap().len() > 0);
+        let mut aad = collection.uuid.to_string();
+        aad.push_str(collection.path.to_str().unwrap());
+        aad.push_str(collection.items_path.to_str().unwrap());
 
         // ask backend to decrypt the items, if any
-        let decrypted_items = self.backend.load_collection_items(collection, &metadata)?;
+        let decrypted_items = self.backend.load_collection_items(collection, &aad)?;
         collection.unlock(&decrypted_items)?;
         Ok(())
     }
 
-    pub(crate) fn create_unlock_action(&mut self, coll_uuid: &Uuid) -> Result<PromptAction, TksError> {
+    fn unlock_all_collections(&mut self) -> Result<(), TksError> {
+        trace!("unlock_all_collections");
+        let col_uuids: Vec<Uuid> = self.collections.iter().map(|c| c.uuid).collect();
+        for c in col_uuids  {
+            self.unlock_collection(&c)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn create_unlock_action(
+        &mut self,
+        coll_uuid: &Uuid,
+    ) -> Result<PromptAction, TksError> {
         let collection = self
             .collections
             .iter()
             .find(|c| c.uuid == *coll_uuid)
             .ok_or_else(|| TksError::NotFound(None))?;
-        self.backend.create_unlock_action(coll_uuid, &collection.name)
+        self.backend
+            .create_unlock_action(coll_uuid, &collection.name)
     }
 }

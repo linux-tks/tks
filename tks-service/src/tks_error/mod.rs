@@ -6,6 +6,7 @@ use openssl::error::ErrorStack;
 use pinentry::Error;
 use crate::storage;
 use crate::storage::Storage;
+use homedir::GetHomeError;
 
 #[derive(Debug)]
 pub enum TksError {
@@ -25,6 +26,8 @@ pub enum TksError {
     ItemNotFound,
     DBusError(String),
     ContextError(&'static str),
+    GetHomeError(GetHomeError),
+    NotSupported(&'static str),
 }
 
 impl std::fmt::Display for TksError {
@@ -46,6 +49,8 @@ impl std::fmt::Display for TksError {
             TksError::ItemNotFound => { write!{f, "Item not found upon unlocking collection. Maybe data is corrupted?"}},
             TksError::DBusError(x) => { write!(f, "DBusError: {}", x)},
             TksError::ContextError(x) => { write!(f, "ContextError: {}", x)},
+            TksError::GetHomeError(x) => { write!(f, "GetHomeError: {}", x)},
+            TksError::NotSupported(x) => { write!(f, "Not supported: {}", x)},
         }
     }
 }
@@ -106,4 +111,8 @@ impl From<pinentry::Error> for TksError {
 
 impl From<dbus::Error> for TksError {
     fn from(e: dbus::Error) -> Self { TksError::DBusError(e.to_string()) }
+}
+
+impl From<GetHomeError> for TksError {
+    fn from(e: GetHomeError) -> Self { TksError::GetHomeError(e) }
 }

@@ -10,6 +10,7 @@ use futures::TryFutureExt;
 use openssl::rand::rand_bytes;
 use uuid::Uuid;
 
+/// This is the item's secret data
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct ItemData {
     uuid: Uuid,

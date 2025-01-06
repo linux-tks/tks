@@ -1,11 +1,13 @@
-use crate::tks_dbus::prompt_impl::{PromptAction, PromptDialog, PromptWithPinentry, TksPrompt};
+use crate::tks_dbus::prompt_impl::{
+    ConfirmationMessageActionParam, PromptAction, PromptDialog, PromptWithPinentry, TksPrompt,
+};
 use crate::tks_error::TksError;
 use dbus::arg::{PropMap, RefArg, Variant};
 use dbus_crossroads::Context;
 use lazy_static::lazy_static;
-use log::{debug, trace};
+use log::{debug, error, trace};
 use openssl::sha;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::ffi::OsString;
 use std::hash::{Hash, Hasher};
 use std::io::Read;
@@ -28,6 +30,9 @@ pub enum TksClientOption {
     Client(TksClient),
 }
 
+/// Information about the TKS client process
+/// TODO hold the calling process binary SHA (and have it automatically updated upon system update?)
+/// TODO retrieve method below should check actuall caller has the same SHA as when enrolled
 #[derive(Clone, Debug)]
 pub struct TksClient {}
 
@@ -36,7 +41,10 @@ pub struct EnrollClientPrompt {
 }
 
 impl TksPrompt for EnrollClientPrompt {
-    fn prompt(&self, _window_id: String) -> Result<bool, TksError> {
+    fn prompt(
+        &self,
+        _window_id: String,
+    ) -> Result<(bool, Option<VecDeque<dbus::Path<'static>>>), TksError> {
         todo!()
     }
 
@@ -53,6 +61,8 @@ impl EnrollClientPrompt {
     }
 }
 
+/// This holds the known clients
+/// TODO store contents encrypted on disk and load it upon service start
 pub struct ClientRegistry {
     known_clients: HashMap<OsString, TksClient>,
 }
@@ -78,15 +88,43 @@ impl ClientRegistry {
             None => {
                 // new client process
                 let action = PromptAction {
-                    dialog: PromptDialog::PromptMessage(
-                        "Yes".into(), format!("An application having the process \
+                    dialog: PromptDialog::ConfirmationMessage(
+                        "Yes".into(),
+                        "No".into(),
+                        format!(
+                            "An application having the process \
                         executable {:?} wants to let Tks handle their secrets\
-                        . Should we accept this?", process.exe_path).into()
-                    )
+                        . Should we accept this?",
+                            process.exe_path
+                        )
+                        .into(),
+                        ConfirmationMessageActionParam::ConfirmNewClient(process.exe_path),
+                        |param| {
+                            match param {
+                                ConfirmationMessageActionParam::ConfirmNewClient(exe_path) => {
+                                    trace!("Registering client {}", exe_path.to_string_lossy());
+                                    // TODO we should check if meanwhile a same path client has been added here
+                                    // and that it is the same SHA; if not, then dismiss the operation
+                                    let client = TksClient {};
+                                    CLIENT_REGISTRY
+                                        .lock()
+                                        .unwrap()
+                                        .known_clients
+                                        .insert(exe_path.clone(), client);
+                                    Ok(false) // we succeeded, but we don't dismiss this dialog
+                                }
+                                _ => {
+                                    error!("Unexpected confirmation message param: {:?}", param);
+                                    assert!(false);
+                                    Ok(true)
+                                }
+                            }
+                        },
+                    ),
                 };
-                Ok( TksClientOption::Prompt(PromptWithPinentry::new(action)?.to_string() ))
-                // Ok(TksClientOption::Prompt("/".into()))
-                // Err(TksError::InternalError("Boom!"))
+                Ok(TksClientOption::Prompt(
+                    PromptWithPinentry::new(action)?.to_string(),
+                ))
             }
         }
     }
@@ -112,8 +150,7 @@ impl TksClientProcess {
             Duration::from_secs(5),
         );
         let (credentials,): (PropMap,) = proxy.method_call(
-            "org.freedesktop\
-        .DBus",
+            "org.freedesktop.DBus",
             "GetConnectionCredentials",
             (name.clone(),),
         )?;

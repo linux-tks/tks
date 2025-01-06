@@ -224,7 +224,6 @@ impl OrgFreedesktopSecretService for ServiceImpl {
             collection_paths
         };
         let mut unlocked = Vec::new();
-        let no_prompt = dbus::Path::from("/");
         for cc in collection_paths {
             let coll = cc.2;
             if coll.locked()? {
@@ -235,14 +234,17 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                 unlocked.push(cc.1);
             }
         }
-        debug!("unlocked: {:?}, prompt: {:?}", unlocked, prompts);
+        let mut unlocked_list = Vec::new();
         let returned_prompt = match prompts.len() {
-            0 => no_prompt,
+            0 => {
+                // returned unlocked list only if no prompt was created
+                unlocked_list = unlocked;
+                dbus::Path::from("/") },
             1 => prompts.pop_front().unwrap(),
             _ => TksPromptChain::new(prompts),
         };
-        let unlocked = unlocked;
-        Ok((unlocked, returned_prompt))
+        debug!("unlocked: {:?}, prompt: {:?}", unlocked_list, returned_prompt);
+        Ok((unlocked_list, returned_prompt))
     }
 
     fn lock(

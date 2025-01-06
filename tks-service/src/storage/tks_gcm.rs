@@ -2,9 +2,11 @@
 //! Tks specific backend using the AES/GCM item secrets encryption
 //!
 #![feature(fs_try_exists)]
-use std::fs;
+use crate::settings::{Settings, Storage};
 use crate::storage::collection::Collection;
-use crate::storage::tks_gcm::TksGcmPasswordSecretHandlerState::{KeyAvailable, Locked, NotCommissioned};
+use crate::storage::tks_gcm::TksGcmPasswordSecretHandlerState::{
+    KeyAvailable, Locked, NotCommissioned,
+};
 use crate::storage::{SecretsHandler, StorageBackend, StorageBackendType, STORAGE};
 use crate::tks_dbus::prompt_impl::{PromptAction, PromptDialog};
 use crate::tks_error::TksError;
@@ -14,10 +16,13 @@ use openssl::rand::rand_bytes;
 use openssl::symm::decrypt_aead;
 use secrecy::{ExposeSecret, SecretString};
 use std::cell::RefCell;
+use std::cmp::PartialEq;
 use std::collections::HashMap;
 use std::ffi::OsString;
+use std::fs;
 use std::path::{Path, PathBuf, MAIN_SEPARATOR};
 use std::rc::Rc;
+use openssl::sha::Sha256;
 use uuid::Uuid;
 use StorageBackendType::TksGcm;
 
@@ -28,6 +33,7 @@ pub struct TksGcmBackend {
     secrets_handler: TksGcmPasswordSecretHandler,
 }
 
+#[derive(PartialEq)]
 enum TksGcmPasswordSecretHandlerState {
     /// Backend has this state when TKS is freshly installed or reconfigured
     NotCommissioned,
@@ -46,9 +52,11 @@ struct TksGcmPasswordSecretHandler {
     cipher: openssl::symm::Cipher,
 }
 impl TksGcmBackend {
-    pub(crate) fn new(path: OsString) -> Result<TksGcmBackend, TksError> {
+    pub(crate) fn new(path: Storage) -> Result<TksGcmBackend, TksError> {
         trace!("Initializing TksGcmBackend with {:?}", path);
         let mut metadata_path = PathBuf::new();
+        let path: OsString = xdg::BaseDirectories::with_prefix(Settings::XDG_DIR_NAME)?
+            .create_data_directory("storage")?.into();
         metadata_path.push(path.clone());
         metadata_path.push("metadata");
         let _ = fs::DirBuilder::new()
@@ -73,29 +81,29 @@ impl TksGcmBackend {
             let mut salt = vec![0u8; 256];
             openssl::rand::rand_bytes(&mut salt)?;
             fs::write(salt_file_path, salt.clone())?;
-            secret_state = TksGcmPasswordSecretHandlerState::NotCommissioned;
-            salt.clone()
+            salt
         } else {
-            secret_state = TksGcmPasswordSecretHandlerState::Locked;
+            trace!("Reading salt file {:?}", salt_file_path);
             fs::read(salt_file_path.clone())?
         };
 
         let mut commissioned_data_path = path.clone();
         commissioned_data_path.push(std::path::MAIN_SEPARATOR_STR);
         commissioned_data_path.push("commissioned");
-        let mut commissioned_data: Vec<u8> = vec![0u8; 256];
-        match secret_state {
-            TksGcmPasswordSecretHandlerState::NotCommissioned => {
-                commissioned_data = vec![0u8; 256];
-                rand_bytes(&mut commissioned_data)?;
-            }
-            TksGcmPasswordSecretHandlerState::Locked => {
-                // commissioned data will be checked upon next password prompt
-            }
-            TksGcmPasswordSecretHandlerState::KeyAvailable => {
-                unreachable!()
-            }
-        }
+        let commissioned_data_check = Path::new(&commissioned_data_path).exists();
+
+        let commissioned_data = if !commissioned_data_check {
+            trace!("Initializing commissioned data");
+            let mut commissioned_data = vec![0u8; 256];
+            openssl::rand::rand_bytes(&mut commissioned_data)?;
+            // we still need to wait for the password so we are still not commissioned
+            secret_state = TksGcmPasswordSecretHandlerState::NotCommissioned;
+            commissioned_data
+        } else {
+            trace!("Reading commissioned data");
+            secret_state = TksGcmPasswordSecretHandlerState::Locked;
+            fs::read(commissioned_data_path.clone())?
+        };
 
         let backend = TksGcmBackend {
             path,
@@ -209,35 +217,37 @@ impl StorageBackend for TksGcmBackend {
                         let mut secrets_handler = storage.backend.get_secrets_handler()?;
                         secrets_handler.derive_key_from_password(s)?;
                     }
-                    assert!(false); // do we still need unlocking on
-                    // individual collections? here we have refactoring WIP
-                    // storage.unlock_collection(coll_uuid)?;
+                    storage.unlock_all_collections()?;
                     Ok(true)
                 },
             ),
         })
     }
 
+    fn is_locked(&self) -> Result<bool, TksError> {
+        Ok(self.secrets_handler.state == TksGcmPasswordSecretHandlerState::KeyAvailable)
+    }
+
     fn save_collection_metadata(
         &mut self,
-        collection: &mut Collection,
-        x: &String,
+        coll_path: &PathBuf,
+        metadata: &String,
     ) -> Result<(), TksError> {
-        trace!("save_collection_metadata {:?}", &collection.path);
-        fs::write(&collection.path, x)?;
+        trace!("save_collection_metadata {:?}", coll_path);
+        fs::write(coll_path, metadata)?;
         Ok(())
     }
 
     fn save_collection_items(
         &mut self,
-        collection: &mut Collection,
-        metadata: &String,
-        items: &String,
+        coll_items_path: &PathBuf,
+        aad: &String,
+        item_data: &String,
     ) -> Result<(), TksError> {
-        trace!("save_collection_items {:?}", &collection.items_path);
+        trace!("save_collection_items {:?}", &coll_items_path);
         let secrets_handler = &self.secrets_handler;
-        let items_encrypted = secrets_handler.encrypt_aead(metadata, items.as_ref())?;
-        fs::write(&collection.items_path, items_encrypted)?;
+        let items_encrypted = secrets_handler.encrypt_aead(aad, item_data.as_ref())?;
+        fs::write(&coll_items_path, items_encrypted)?;
         Ok(())
     }
 
@@ -245,15 +255,16 @@ impl StorageBackend for TksGcmBackend {
     fn load_collection_items(
         &self,
         collection: &Collection,
-        metadata: &String,
+        aad: &String,
     ) -> Result<Vec<u8>, TksError> {
         trace!("load_collection_items {:?}", &collection.items_path);
 
         let mut encrypted: Vec<u8> = Vec::new();
         if Path::new(&collection.items_path).exists() {
             encrypted = fs::read(&collection.items_path)?;
-            self.secrets_handler.decrypt_aead(metadata, &encrypted)
+            self.secrets_handler.decrypt_aead(aad, &encrypted)
         } else {
+            debug!("Collection is empty");
             Ok(encrypted)
         }
     }
@@ -262,7 +273,7 @@ impl StorageBackend for TksGcmBackend {
 impl SecretsHandler for &mut TksGcmPasswordSecretHandler {
     fn derive_key_from_password(&mut self, s: SecretString) -> Result<(), TksError> {
         trace!("derive_key_from_password");
-        let mut key= vec![0u8; 32];
+        let mut key = vec![0u8; 32];
         openssl::pkcs5::pbkdf2_hmac(
             s.expose_secret().as_bytes(),
             &self.salt,
@@ -270,6 +281,7 @@ impl SecretsHandler for &mut TksGcmPasswordSecretHandler {
             openssl::hash::MessageDigest::sha512(),
             &mut key,
         )?;
+        self.key = key;
 
         match self.state {
             NotCommissioned => {
@@ -277,19 +289,19 @@ impl SecretsHandler for &mut TksGcmPasswordSecretHandler {
                 let metadata = self.commissioned_data_path.to_str().unwrap();
                 let encrypted = self.encrypt_aead(metadata, &self.commissioned_data)?;
                 fs::write(&self.commissioned_data_path, encrypted)?;
-            },
+            }
             Locked => {
                 trace!("Checking storage backend password");
                 let data = fs::read(&self.commissioned_data_path)?;
                 let metadata = self.commissioned_data_path.to_str().unwrap();
                 let _ = self.decrypt_aead(metadata, &data)?;
-            },
+                // we've made it so far, meaning we've got the right secret material
+                self.state = KeyAvailable;
+            }
             KeyAvailable => {
                 unreachable!()
-            },
+            }
         }
-        // TODO derive real key from above key using KDF and current timestamp
-        self.state = KeyAvailable;
         Ok(())
     }
 }
@@ -297,6 +309,10 @@ impl SecretsHandler for &mut TksGcmPasswordSecretHandler {
 impl TksGcmPasswordSecretHandler {
     const FILE_SCHEMA_VERSION: u8 = 1;
     fn encrypt_aead(&self, metadata: &str, items: &[u8]) -> Result<Vec<u8>, TksError> {
+        let mut metadata_sha = Sha256::new();
+        metadata_sha.update(metadata.as_bytes());
+        debug!("encrypt_aead using metadata SHA {:?}", metadata_sha.finish());
+
         let mut tag = vec![0u8; 16];
         let mut iv = [0u8; 12];
         rand_bytes(&mut iv)?;
@@ -317,7 +333,7 @@ impl TksGcmPasswordSecretHandler {
         Ok(encrypted)
     }
 
-    fn decrypt_aead(&self, metadata: &str, encrypted: &[u8]) -> Result<Vec<u8>, TksError> {
+    fn decrypt_aead(&self, aad: &str, encrypted: &[u8]) -> Result<Vec<u8>, TksError> {
         let version: &u8 = encrypted
             .get(0)
             .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?;
@@ -346,11 +362,14 @@ impl TksGcmPasswordSecretHandler {
             }
         };
 
+        let mut metadata_sha = Sha256::new();
+        metadata_sha.update(aad.as_bytes());
+        debug!("decrypt_aead using metadata SHA {:?}", metadata_sha.finish());
         let decrypted = decrypt_aead(
             self.cipher,
             &self.key,
             Some(&iv),
-            metadata.as_ref(),
+            aad.as_ref(),
             cyphertext.as_ref(),
             tag.as_ref(),
         )?;

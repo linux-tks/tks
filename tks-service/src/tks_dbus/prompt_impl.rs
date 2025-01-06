@@ -12,9 +12,14 @@ use dbus::message::SignalArgs;
 use dbus::{arg, Path};
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
+use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
 use pinentry::{ConfirmationDialog, MessageDialog};
+use scopeguard::defer;
 use secrecy::SecretString;
+use std::cell::RefCell;
 use std::collections::{BTreeMap as Map, VecDeque};
+use std::ffi::OsString;
+use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
 use uuid::Uuid;
@@ -25,15 +30,15 @@ pub struct PromptHandle {
 }
 
 pub trait TksPrompt {
-    fn prompt(&self, _window_id: String) -> Result<bool, TksError>;
+    fn prompt(&self, _window_id: String) -> Result<(bool, Option<PromptChainPaths>), TksError>;
     fn dismiss(&self) -> Result<(), TksError>;
 }
 
 lazy_static! {
     // This is the list of the DBus-registered prompts, that are yet to be invoked
     // by the client applications
-    pub static ref PROMPTS: Arc<Mutex<Map<usize, Box<dyn TksPrompt + Send>>>> =
-        Arc::new(Mutex::new(Map::new()));
+    pub static ref PROMPTS: Arc<ReentrantMutex<RefCell<Map<usize, Box<dyn TksPrompt + Send>>>>> =
+        Arc::new(ReentrantMutex::new(RefCell::new(Map::new())));
     pub static ref PROMPT_COUNTER: Arc<Mutex<usize>> = Arc::new(Mutex::new(0));
 }
 
@@ -53,7 +58,8 @@ macro_rules! register_prompt {
         let path = handle.path().clone();
         PROMPTS
             .lock()
-            .unwrap()
+            .deref()
+            .borrow_mut()
             .insert($prompt.prompt_id, Box::new($prompt.clone()));
         register_object!(register_org_freedesktop_secret_prompt, handle);
         path
@@ -68,6 +74,16 @@ macro_rules! next_prompt_id {
     }};
 }
 
+trait ConfirmedAction {
+    /// to keep logic consistent with the prompts, this returns `true` when action is dismissed
+    fn confirmed(&self) -> bool;
+}
+
+#[derive(Clone, Debug)]
+pub enum ConfirmationMessageActionParam {
+    ConfirmNewClient(OsString)
+}
+
 #[derive(Clone, Debug)]
 pub enum PromptDialog {
     PromptMessage(String, String), //  MessageDialog.with_ok(1).show_message(2)
@@ -77,6 +93,14 @@ pub enum PromptDialog {
         Option<String>,                             // confirmation
         Option<String>,                             // mismatch message
         fn(SecretString) -> Result<bool, TksError>, // action if user confirms dialog
+    ),
+    ConfirmationMessage(
+        // ConfirmationDialog::with_ok(1).with_cancel(2).confirm(3)
+        String,                         // String on the OK button
+        String,                         // String on the Cancel button
+        String,                         // Confirmation message
+        ConfirmationMessageActionParam,
+        fn(&ConfirmationMessageActionParam) -> Result<bool, TksError>,
     ),
 }
 #[derive(Clone, Debug)]
@@ -89,23 +113,22 @@ impl PromptAction {
         debug!("PromptAction dismiss");
         Ok(())
     }
-}
 
-impl PromptAction {
-    //! returns true if the dialog has been dismissed, false otherwise
+    // returns true if the dialog has been dismissed, false otherwise
     pub fn perform(&self) -> Result<bool, TksError> {
         match &self.dialog {
             PromptDialog::PromptMessage(ok, msg) => {
                 if let Some(mut d) = MessageDialog::with_default_binary() {
                     d.with_ok(ok).show_message(msg).unwrap();
-                    Ok(true)
+                    Ok(false)
                 } else {
                     Err(TksError::NoPinentryBinaryFound)
                 }
             }
             PromptDialog::PassphraseInput(desc, prompt, confirmation, mismatch, action) => {
                 if let Some(mut d) = pinentry::PassphraseInput::with_default_binary() {
-                    d.with_prompt(prompt.as_str())
+                    d.required("Password is required".into())
+                        .with_prompt(prompt.as_str())
                         .with_description(desc.as_str());
                     let mis: String;
                     if let Some(conf) = confirmation {
@@ -114,6 +137,19 @@ impl PromptAction {
                     }
                     let s = d.interact()?;
                     action(s)
+                } else {
+                    Err(TksError::NoPinentryBinaryFound)
+                }
+            }
+            PromptDialog::ConfirmationMessage(yes, no, confirmation, action_param, action) => {
+                if let Some(mut input) = ConfirmationDialog::with_default_binary() {
+                    let dismissed = !input.with_ok(yes).with_cancel(no).confirm(confirmation)?;
+                    if (dismissed) {
+                        trace!("User dismissed confirmation '{}", confirmation);
+                        Ok(dismissed)
+                    } else {
+                        Ok(action(action_param)?)
+                    }
                 } else {
                     Err(TksError::NoPinentryBinaryFound)
                 }
@@ -134,13 +170,15 @@ impl PromptWithPinentry {
             prompt_id: next_prompt_id!(),
             action: action.clone(),
         };
+        // TODO users might forget to use prompts, so attach a timer on each and self destruct after several minutes
         Ok(register_prompt!(prompt).into())
     }
 }
 
 impl TksPrompt for PromptWithPinentry {
-    fn prompt(&self, _window_id: String) -> Result<bool, TksError> {
-        Ok(self.action.perform()?)
+    /// returns `true` when dismissed
+    fn prompt(&self, _window_id: String) -> Result<(bool, Option<PromptChainPaths>), TksError> {
+        Ok((self.action.perform()?, None))
     }
 
     fn dismiss(&self) -> Result<(), TksError> {
@@ -225,9 +263,43 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
     fn prompt(&mut self, window_id: String) -> Result<(), dbus::MethodErr> {
         trace!("prompt {}", window_id);
 
-        let dismissed: bool;
-        if let Some(prompt) = PROMPTS.lock().unwrap().get(&self.prompt_id) {
-            dismissed = prompt.prompt(window_id)?;
+        let dismissed: bool = true; // errors effectively dismiss us
+        let mut chain_paths: Option<PromptChainPaths> = None;
+        let prompt_path = self.path().clone();
+        let prompt_id = self.prompt_id;
+        let mut guard = scopeguard::guard((dismissed, chain_paths), |(dismissed, chain_paths)| {
+            // ensure we unregister the prompt once interaction has been done, but also in any case of error
+            tokio::spawn(async move {
+                trace!("sending prompt completed signal");
+                let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
+                MESSAGE_SENDER.lock().unwrap().send_message(
+                    OrgFreedesktopSecretPromptCompleted {
+                        dismissed,
+                        result: arg::Variant(Box::new((false, "".to_string()))),
+                    }
+                    .to_emit_message(&prompt_path.into()),
+                );
+                PROMPTS.lock().deref().borrow_mut().remove(&prompt_id);
+                tokio::spawn(async move {
+                    trace!("unregistering prompt {}", prompt_id);
+                    CROSSROADS
+                        .lock()
+                        .unwrap()
+                        .remove::<PromptHandle>(&prompt_path2);
+                });
+                if let Some(paths) = chain_paths {
+                    for path in paths {
+                        tokio::spawn(async move {
+                            trace!("unregistering prompt {}", prompt_id);
+                            CROSSROADS.lock().unwrap().remove::<PromptHandle>(&path);
+                        });
+                    }
+                }
+            });
+        });
+
+        if let Some(prompt) = PROMPTS.lock().deref().borrow().get(&self.prompt_id) {
+            *guard = prompt.prompt(window_id)?;
         } else {
             error!("prompt not found");
             return Err(dbus::MethodErr::failed(
@@ -235,32 +307,11 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
             ));
         };
 
-        let prompt_path = self.path().clone();
-        let prompt_id = self.prompt_id;
-        tokio::spawn(async move {
-            trace!("sending prompt completed signal");
-            let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
-            MESSAGE_SENDER.lock().unwrap().send_message(
-                OrgFreedesktopSecretPromptCompleted {
-                    dismissed,
-                    result: arg::Variant(Box::new((false, "".to_string()))),
-                }
-                .to_emit_message(&prompt_path.into()),
-            );
-            PROMPTS.lock().unwrap().remove(&prompt_id);
-            tokio::spawn(async move {
-                trace!("unregistering prompt {}", prompt_id);
-                CROSSROADS
-                    .lock()
-                    .unwrap()
-                    .remove::<PromptHandle>(&prompt_path2);
-            });
-        });
         Ok(())
     }
     fn dismiss(&mut self) -> Result<(), dbus::MethodErr> {
         trace!("dismiss {}", self.prompt_id);
-        if let Some(prompt) = PROMPTS.lock().unwrap().get(&self.prompt_id) {
+        if let Some(prompt) = PROMPTS.lock().deref().borrow().get(&self.prompt_id) {
             prompt.dismiss()?
         } else {
             error!("prompt not found");
@@ -271,6 +322,15 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
         let prompt_id = self.prompt_id;
         let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
         tokio::spawn(async move {
+            trace!("sending prompt completed signal");
+            let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
+            MESSAGE_SENDER.lock().unwrap().send_message(
+                OrgFreedesktopSecretPromptCompleted {
+                    dismissed: true,
+                    result: arg::Variant(Box::new((false, "".to_string()))),
+                }
+                .to_emit_message(&prompt_path.into()),
+            );
             trace!("unregistering prompt {}", prompt_id);
             CROSSROADS
                 .lock()
@@ -298,9 +358,10 @@ impl Dialog for ConfirmationDialog<'_> {
     }
 }
 
+type PromptChainPaths = VecDeque<dbus::Path<'static>>;
 #[derive(Clone)]
 pub struct TksPromptChain {
-    prompts: VecDeque<dbus::Path<'static>>,
+    prompts: PromptChainPaths,
     prompt_id: usize,
 }
 
@@ -313,15 +374,20 @@ impl TksPromptChain {
         register_prompt!(prompt).into()
     }
 
-    fn invoke_prompts(&self, window_id: Option<String>, dismissed: bool) -> Result<bool, TksError> {
+    fn invoke_prompts(
+        &self,
+        window_id: Option<String>,
+        dismissed: bool,
+    ) -> Result<(bool, Option<PromptChainPaths>), TksError> {
         let mut dismissed = dismissed;
         assert!(dismissed || window_id.is_some());
         for prompt_path in &self.prompts {
-            let parts = prompt_path.split('/');
-            match parts.count() {
-                5 => {
-                    let id: usize = (prompt_path.split('/').nth(4).unwrap()).parse().unwrap();
-                    dismissed |= PROMPTS.lock().unwrap().get(&id).map_or_else(
+            let mut parts = prompt_path.split('/');
+            match parts.clone().count() {
+                6 => {
+                    let ids = parts.nth(5).unwrap();
+                    let id: usize = ids.parse().unwrap();
+                    dismissed |= PROMPTS.lock().deref().borrow().get(&id).map_or_else(
                         || {
                             Err(TksError::NotFound(Some(format!(
                                 "Prompt not registered: {}",
@@ -330,21 +396,27 @@ impl TksPromptChain {
                         },
                         |p| {
                             if dismissed {
-                                p.dismiss();
+                                p.dismiss()?;
                                 Ok(dismissed)
                             } else {
-                                Ok(p.prompt(window_id.clone().unwrap())?)
+                                let (dismissed, _) = p.prompt(window_id.clone().unwrap())?;
+                                Ok(dismissed)
                             }
                         },
                     )?;
                 }
-                _ => {
-                    debug!("Incorrect prompt path received {:?}", prompt_path);
+                n => {
+                    debug!(
+                        "Incorrect prompt path received {:?} which as {} parts",
+                        prompt_path, n
+                    );
                     return Err(TksError::NotFound(Some(prompt_path.to_string())));
                 }
             }
         }
-        Ok(dismissed)
+        // FIXME in case of premature error, caller no longer get the prompts to be unregistered so the subordinate
+        // prompts won't get unregistered
+        Ok((dismissed, Some(self.prompts.clone())))
     }
 }
 
@@ -353,7 +425,7 @@ macro_rules! tks_prompt_from_path {
 }
 
 impl TksPrompt for TksPromptChain {
-    fn prompt(&self, window_id: String) -> Result<bool, TksError> {
+    fn prompt(&self, window_id: String) -> Result<(bool, Option<PromptChainPaths>), TksError> {
         self.invoke_prompts(Some(window_id), false)
     }
 
