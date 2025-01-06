@@ -19,7 +19,7 @@ jobs:
     - uses: actions-rs/toolchain@v1
       with:
         profile: minimal
-        toolchain: nightly-2023-12-09
+        toolchain: nightly
         override: true
     - name: Pre-requisites
       run: sudo apt install libdbus-1-dev pkg-config libtss2-sys1 libpcsclite-dev
