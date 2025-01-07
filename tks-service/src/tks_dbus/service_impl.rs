@@ -8,7 +8,6 @@ use dbus::message::SignalArgs;
 use log;
 use log::{debug, error, trace};
 use std::collections::{HashMap, VecDeque};
-use std::ops::Deref;
 
 extern crate pretty_env_logger;
 use crate::convert_prop_map;

@@ -21,9 +21,7 @@ use log::{debug, error, trace, warn};
 use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::sync::{Arc, Mutex};
-use pinentry::MessageDialog;
 use uuid::Uuid;
-use crate::tks_dbus::prompt_impl::PromptWithPinentry;
 use crate::tks_error::TksError;
 
 #[derive(Debug, Default, Clone)]

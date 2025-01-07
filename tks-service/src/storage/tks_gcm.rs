@@ -9,24 +9,16 @@ use crate::storage::tks_gcm::TksGcmPasswordSecretHandlerState::{
 use crate::storage::{SecretsHandler, StorageBackend, StorageBackendType, STORAGE};
 use crate::tks_dbus::prompt_impl::{PromptAction, PromptDialog};
 use crate::tks_error::TksError;
-use dbus::arg::RefArg;
 use log::{debug, trace};
 use openssl::rand::rand_bytes;
+use openssl::sha::Sha256;
 use openssl::symm::decrypt_aead;
 use secrecy::{ExposeSecret, SecretString};
-use std::cell::RefCell;
-use std::cmp::PartialEq;
-use std::collections::HashMap;
-use std::ffi::OsString;
-use std::fs;
-use std::path::{Path, PathBuf, MAIN_SEPARATOR};
-use std::rc::Rc;
-use openssl::sha::Sha256;
+use std::{cmp::PartialEq, ffi::OsString, fs, path::Path, path::PathBuf};
 use uuid::Uuid;
 use StorageBackendType::TksGcm;
 
 pub struct TksGcmBackend {
-    path: OsString,
     metadata_path: OsString,
     items_path: OsString,
     secrets_handler: TksGcmPasswordSecretHandler,
@@ -51,26 +43,28 @@ struct TksGcmPasswordSecretHandler {
     cipher: openssl::symm::Cipher,
 }
 impl TksGcmBackend {
-    pub(crate) fn new(path: Storage) -> Result<TksGcmBackend, TksError> {
+    pub(crate) fn new(settings: Storage) -> Result<TksGcmBackend, TksError> {
+        let path = settings.path.unwrap_or({
+            xdg::BaseDirectories::with_prefix(Settings::XDG_DIR_NAME)?
+                .create_data_directory("storage")?
+                .to_string_lossy()
+                .to_string()
+        });
         trace!("Initializing TksGcmBackend with {:?}", path);
-        let mut metadata_path = PathBuf::new();
-        let path: OsString = xdg::BaseDirectories::with_prefix(Settings::XDG_DIR_NAME)?
-            .create_data_directory("storage")?.into();
-        metadata_path.push(path.clone());
+        let mut metadata_path = PathBuf::from(path.clone());
         metadata_path.push("metadata");
         let _ = fs::DirBuilder::new()
             .recursive(true)
             .create(metadata_path.clone())?;
 
-        let mut items_path = PathBuf::new();
+        let mut items_path = PathBuf::from(path.clone());
         items_path.push(path.clone());
         items_path.push("items");
         let _ = fs::DirBuilder::new()
             .recursive(true)
             .create(items_path.clone())?;
 
-        let mut salt_file_path = path.clone();
-        salt_file_path.push(std::path::MAIN_SEPARATOR_STR);
+        let mut salt_file_path = PathBuf::from(path.clone());
         salt_file_path.push("salt");
         let salt_check = Path::new(&salt_file_path).exists();
         let secret_state: TksGcmPasswordSecretHandlerState;
@@ -86,33 +80,32 @@ impl TksGcmBackend {
             fs::read(salt_file_path.clone())?
         };
 
-        let mut commissioned_data_path = path.clone();
+        let mut commissioned_data_path = PathBuf::from(path.clone());
         commissioned_data_path.push(std::path::MAIN_SEPARATOR_STR);
         commissioned_data_path.push("commissioned");
         let commissioned_data_check = Path::new(&commissioned_data_path).exists();
 
         let commissioned_data = if !commissioned_data_check {
-            trace!("Initializing commissioned data");
+            trace!("Initializing commissioned data {}", &commissioned_data_path.display());
             let mut commissioned_data = vec![0u8; 256];
             openssl::rand::rand_bytes(&mut commissioned_data)?;
             // we still need to wait for the password so we are still not commissioned
             secret_state = TksGcmPasswordSecretHandlerState::NotCommissioned;
             commissioned_data
         } else {
-            trace!("Reading commissioned data");
+            trace!("Reading commissioned data {}", &commissioned_data_path.display());
             secret_state = TksGcmPasswordSecretHandlerState::Locked;
             fs::read(commissioned_data_path.clone())?
         };
 
         let backend = TksGcmBackend {
-            path,
             metadata_path: metadata_path.into(),
             items_path: items_path.into(),
             secrets_handler: TksGcmPasswordSecretHandler {
                 state: secret_state,
                 salt,
                 commissioned_data,
-                commissioned_data_path,
+                commissioned_data_path: commissioned_data_path.into(),
                 key: vec![0u8; 32],
                 cipher: openssl::symm::Cipher::aes_256_gcm(),
             },
@@ -310,7 +303,10 @@ impl TksGcmPasswordSecretHandler {
     fn encrypt_aead(&self, metadata: &str, items: &[u8]) -> Result<Vec<u8>, TksError> {
         let mut metadata_sha = Sha256::new();
         metadata_sha.update(metadata.as_bytes());
-        debug!("encrypt_aead using metadata SHA {:?}", metadata_sha.finish());
+        debug!(
+            "encrypt_aead using metadata SHA {:?}",
+            metadata_sha.finish()
+        );
 
         let mut tag = vec![0u8; 16];
         let mut iv = [0u8; 12];
@@ -336,9 +332,9 @@ impl TksGcmPasswordSecretHandler {
         let version: &u8 = encrypted
             .get(0)
             .ok_or_else(|| TksError::SerializationError("Corrupted file".to_string()))?;
-        let mut tag: Vec<u8> = vec![0u8; 16];
-        let mut iv: Vec<u8> = vec![0u8; 12];
-        let mut cyphertext: Vec<u8> = Vec::new();
+        let tag: Vec<u8>;
+        let iv: Vec<u8>;
+        let cyphertext: Vec<u8>;
         match version {
             1 => {
                 iv = encrypted
@@ -363,7 +359,10 @@ impl TksGcmPasswordSecretHandler {
 
         let mut metadata_sha = Sha256::new();
         metadata_sha.update(aad.as_bytes());
-        debug!("decrypt_aead using metadata SHA {:?}", metadata_sha.finish());
+        debug!(
+            "decrypt_aead using metadata SHA {:?}",
+            metadata_sha.finish()
+        );
         let decrypted = decrypt_aead(
             self.cipher,
             &self.key,

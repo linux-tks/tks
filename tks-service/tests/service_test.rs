@@ -15,6 +15,7 @@ mod tests {
     use dbus_tokio::connection;
     use regex::Regex;
     use std::env;
+    use std::path::{Path, PathBuf};
     use tks_service::tks_dbus::start_server;
     use tokio::time::Duration;
     use tokio::time::{interval, sleep};
@@ -39,7 +40,14 @@ mod tests {
     impl TestFixtureData {
         fn new() -> Self {
             env::set_var("TKS_RUN_MODE", "test");
-            env::set_var("RUST_LOG", "debug");
+            env::set_var("RUST_LOG", "trace");
+
+            // take settings directly from the test.toml file located in the source tree
+            let mut config_path = PathBuf::from(env::current_dir().unwrap());
+            config_path.push("config");
+            config_path.push("test.toml");
+            env::set_var("TKS_SERVICE_CONFIG_PATH", config_path);
+
             pretty_env_logger::init();
 
             let (resource, conn) = connection::new_session_sync().unwrap();

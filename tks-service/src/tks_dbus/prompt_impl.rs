@@ -12,9 +12,8 @@ use dbus::message::SignalArgs;
 use dbus::{arg, Path};
 use lazy_static::lazy_static;
 use log::{debug, error, trace};
-use parking_lot::{ReentrantMutex, ReentrantMutexGuard};
+use parking_lot::ReentrantMutex;
 use pinentry::{ConfirmationDialog, MessageDialog};
-use scopeguard::defer;
 use secrecy::SecretString;
 use std::cell::RefCell;
 use std::collections::{BTreeMap as Map, VecDeque};
@@ -22,7 +21,6 @@ use std::ffi::OsString;
 use std::ops::Deref;
 use std::sync::Arc;
 use std::sync::Mutex;
-use uuid::Uuid;
 
 #[derive(Debug, Clone)]
 pub struct PromptHandle {
@@ -259,7 +257,7 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
         trace!("prompt {}", window_id);
 
         let dismissed: bool = true; // errors effectively dismiss us
-        let mut chain_paths: Option<PromptChainPaths> = None;
+        let chain_paths: Option<PromptChainPaths> = None;
         let prompt_path = self.path().clone();
         let prompt_id = self.prompt_id;
         let mut guard = scopeguard::guard((dismissed, chain_paths), |(dismissed, chain_paths)| {
