@@ -1,6 +1,8 @@
 
 # TKS
 
+![CI Status](https://github.com/linux-tks/tks/actions/workflows/rust-test.yml/badge.svg)
+
 TKS Keeps Secrets, otherwise called "Tux Keeps Secrets", pronounced the same
 as "ticks".
 
