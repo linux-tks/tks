@@ -81,7 +81,6 @@ impl TksGcmBackend {
         };
 
         let mut commissioned_data_path = PathBuf::from(path.clone());
-        commissioned_data_path.push(std::path::MAIN_SEPARATOR_STR);
         commissioned_data_path.push("commissioned");
         let commissioned_data_check = Path::new(&commissioned_data_path).exists();
 
@@ -210,7 +209,7 @@ impl StorageBackend for TksGcmBackend {
                         secrets_handler.derive_key_from_password(s)?;
                     }
                     storage.unlock_all_collections()?;
-                    Ok(true)
+                    Ok(false) // remember, we return the `dismissed` state and not the `success` state
                 },
             ),
         })

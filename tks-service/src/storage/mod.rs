@@ -142,7 +142,7 @@ impl Storage {
             .iter()
             .filter(|c| c.aliases.is_some())
             .find(|&c| c.aliases.as_ref().unwrap().contains(&alias.to_string()))
-            .map(|c| c.name.clone())
+            .map(|c| c.uuid.to_string())
             .ok_or(TksError::NotFound(
                 format!("Alias '{}' not found", alias).into(),
             ))

@@ -139,9 +139,9 @@ impl OrgFreedesktopSecretService for ServiceImpl {
     fn search_items(
         &mut self,
         ctx: &mut Context,
-        attributes: ::std::collections::HashMap<String, String>,
+        search_attributes: ::std::collections::HashMap<String, String>,
     ) -> Result<(Vec<dbus::Path<'static>>, Vec<dbus::Path<'static>>), dbus::MethodErr> {
-        trace!("search_items {:?}", attributes);
+        trace!("search_items {:?}", search_attributes);
         let mut unlocked = Vec::new();
         let mut locked = Vec::new();
 
@@ -158,8 +158,8 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                             c.items
                                 .iter()
                                 .filter(|i| {
-                                    attributes.iter().fold(true, |b, (k, v)| {
-                                        b && i
+                                    search_attributes.iter().fold(true, |b, (k, v)| {
+                                        b && ( i
                                             .attributes
                                             .clone()
                                             .into_keys()
@@ -169,7 +169,14 @@ impl OrgFreedesktopSecretService for ServiceImpl {
                                                 .clone()
                                                 .into_values()
                                                 .find(|vx| vx == v)
-                                                .is_some()
+                                                .is_some() ) || (
+                                            // if user specified `label`:`value` then extend the
+                                            // search to current item's label, to help finding items
+                                            match k.to_lowercase().as_str() {
+                                                "label" => i.label.to_lowercase() == *v,
+                                                _ => false
+                                            }
+                                        )
                                     })
                                 })
                                 .map(|i| ItemImpl::from(i).into()),

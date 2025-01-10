@@ -256,19 +256,19 @@ impl OrgFreedesktopSecretPrompt for PromptHandle {
     fn prompt(&mut self, window_id: String) -> Result<(), dbus::MethodErr> {
         trace!("prompt {}", window_id);
 
-        let dismissed: bool = true; // errors effectively dismiss us
+        let dismissed: bool = false; // errors effectively dismiss us
         let chain_paths: Option<PromptChainPaths> = None;
         let prompt_path = self.path().clone();
         let prompt_id = self.prompt_id;
         let mut guard = scopeguard::guard((dismissed, chain_paths), |(dismissed, chain_paths)| {
             // ensure we unregister the prompt once interaction has been done, but also in any case of error
             tokio::spawn(async move {
-                trace!("sending prompt completed signal");
+                trace!("sending prompt completed signal, dismissed = {}", dismissed);
                 let prompt_path2: dbus::Path<'static> = prompt_path.clone().into();
                 MESSAGE_SENDER.lock().unwrap().send_message(
                     OrgFreedesktopSecretPromptCompleted {
                         dismissed,
-                        result: arg::Variant(Box::new((false, "".to_string()))),
+                        result: arg::Variant(Box::new((dismissed, "".to_string()))),
                     }
                     .to_emit_message(&prompt_path.into()),
                 );

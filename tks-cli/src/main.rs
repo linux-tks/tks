@@ -1,13 +1,15 @@
+mod import_kwallet;
+
+use anyhow::Result;
 use clap::{Parser, Subcommand};
-extern crate pretty_env_logger;
-#[macro_use]
-extern crate log;
+use clap_verbosity_flag::{InfoLevel, Verbosity};
 use colored::Colorize;
 use console::Term;
 use std::io::Read;
 use std::{io, process::exit};
 use yubikey::{Context, Key, Serial, YubiKey};
 use yubikey::piv::SlotId;
+use import_kwallet::ImportKwalletCmd;
 
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
@@ -15,9 +17,9 @@ struct Args {
     #[command(subcommand)]
     cmd: Commands,
 
-    /// Verbose mode
-    #[arg(short, long)]
-    verbose: bool,
+    /// Run the tool in verbose mode
+    #[command(flatten)]
+    verbosity: Verbosity<InfoLevel>,
 }
 
 #[derive(Parser, Debug)]
@@ -43,15 +45,31 @@ enum ServiceCmd {
 }
 
 #[derive(Parser, Debug)]
-struct ImportKwalletCmd {}
-#[derive(Parser, Debug)]
 struct ImportGnomeCmd {}
 #[derive(Parser, Debug)]
 struct ImportPassCmd {}
 
 #[derive(Subcommand, Debug)]
 enum ImportCmd {
-    /// Import from KWallet
+    #[clap(verbatim_doc_comment)]
+    /// This command imports an XML file obtained by using KWalletManager's "export as XML" feature
+    ///
+    /// The KWallet data is typically organized in several main folders. The well known default
+    /// folder is the `Passwords` folder. Another default folder name is `FormData`. Then, we can have
+    /// any other arbitrary folders at the top of the wallet. The name of the original folder is
+    /// being put into a special attribute attached to each item. This attributes name is
+    /// `tks:kwallet-folder`.
+    ///
+    /// NOTE: Currently, there is no known mapping between KWallet Map entries and Secret Service
+    /// items. For this reason, this tool ignores the Map entries. Same applies to FormData. If you
+    /// happen to know how to map these from KWallet to Secret Service, then please issue a Pull Request.
+    ///
+    /// KWallet entry type can be passwords, maps, binary data or unknown. We use the attribute
+    /// `tks:kwallet-entry-type` to store the initial item type.
+    ///
+    /// In addition to above attribute, each item will also receive the following attributes:
+    /// `xdg:schema`:`org.freedesktop.Secret.Generic'
+    /// `xdg:creator`:`org.kde.KWallet`
     Kwallet(ImportKwalletCmd),
     /// Import from GNOME Keyring
     Gnome(ImportGnomeCmd),
@@ -78,22 +96,18 @@ enum Commands {
     },
 }
 
-fn main() {
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<()> {
     let args = Args::parse();
 
-    if args.verbose {
-        // When debugging, developers can set the TKS_CLI_LOG environment variable to control the log level prior to running the program
-        if let Err(_) = std::env::var("TKS_CLI_LOG") {
-            std::env::set_var("TKS_CLI_LOG", "info");
-        }
-    }
-    pretty_env_logger::init_custom_env("TKS_CLI_LOG");
+    pretty_env_logger::formatted_builder().filter_level(args.verbosity.into()).init();
 
     match args.cmd {
         Commands::Yk { yk_cmd } => yk_cmd.run(),
         Commands::Service { service_cmd } => service_cmd.run(),
-        Commands::Import { import_cmd } => import_cmd.run(),
+        Commands::Import { import_cmd } => import_cmd.run().await?,
     }
+    Ok(())
 }
 
 impl YkCmd {
@@ -103,7 +117,7 @@ impl YkCmd {
             YkCmd::List(list) => list.run(),
         }
         .unwrap_or_else(|e| {
-            debug!("Error: {:?}", e);
+            log::debug!("Error: {:?}", e);
             e.print();
         })
     }
@@ -220,26 +234,21 @@ impl ServiceStatusCmd {
     }
 }
 impl ImportCmd {
-    fn run(&self) {
+    async fn run(&self) -> Result<()> {
         match self {
-            ImportCmd::Kwallet(cmd) => cmd.run(),
-            ImportCmd::Gnome(cmd) => cmd.run(),
-            ImportCmd::Pass(cmd) => cmd.run(),
+            ImportCmd::Kwallet(cmd) => cmd.run().await,
+            ImportCmd::Gnome(cmd) => cmd.run().await,
+            ImportCmd::Pass(cmd) => cmd.run().await,
         }
     }
 }
-impl ImportKwalletCmd {
-    fn run(&self) {
-        println!("Not yet implemented.")
-    }
-}
 impl ImportGnomeCmd {
-    fn run(&self) {
-        println!("Not yet implemented.")
+    async fn run(&self) -> Result<()> {
+        todo!()
     }
 }
 impl ImportPassCmd {
-    fn run(&self) {
-        println!("Not yet implemented.")
+    async fn run(&self) -> Result<()> {
+        todo!()
     }
 }

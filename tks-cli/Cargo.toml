@@ -6,10 +6,15 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-clap = { version = "4.5.8", features = ["derive"] }
+anyhow = "*"
+clap = { version = "*", features = ["derive"] }
+clap-verbosity-flag = "*"
 colored = "2.1.0"
 console = "0.15.8"
 log = "0.4.22"
-pretty_env_logger = "0.5.0"
 reqwest = { version = "0.12.5", features = ["blocking"] }
 yubikey = "0.8.0"
+secret-service = { version = "4.0.0", features = ["rt-tokio-crypto-openssl"] }
+tokio = { version ="*", features = ["full"] }
+pretty_env_logger = "0.5.0"
+roxmltree = "*"
